@@ -4,10 +4,13 @@ import MatatuMap from '@/components/Map/MatatuMap';
 import DriverHUD from '@/components/HUD/DriverHUD';
 import SimulationControls from '@/components/HUD/SimulationControls';
 import BoardingToast from '@/components/HUD/BoardingToast';
+import { AiAssistantBubble } from '@/components/HUD/AiAssistantBubble';
 import { Button } from '@/components/ui/button';
 import { locationService, RouteStop, RouteType } from '@/services/LocationService';
 import { useSimulation, useBoardingEvents } from '@/hooks/useSimulation';
 import { BoardingEvent } from '@/services/SimulationService';
+import { telemetryService } from '@/services/TelemetryService';
+import { aiAdvisorService } from '@/services/AiAdvisorService';
 import { ArrowLeft, Route } from 'lucide-react';
 
 interface DriverScreenProps {
@@ -46,14 +49,26 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ onBack }) => {
 
   useBoardingEvents(handleBoardingEvent);
 
-  // Sync location service with simulation
+  // Sync services with simulation
   useEffect(() => {
     if (isRunning) {
       locationService.startSimulation();
+      telemetryService.start();
+      aiAdvisorService.start();
     } else {
       locationService.stopSimulation();
+      telemetryService.stop();
+      aiAdvisorService.stop();
     }
   }, [isRunning]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      telemetryService.stop();
+      aiAdvisorService.stop();
+    };
+  }, []);
 
   const handleRouteChange = (route: RouteType) => {
     stop();
@@ -144,6 +159,9 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ onBack }) => {
         event={currentBoardingEvent} 
         isVisible={showBoardingToast} 
       />
+
+      {/* AI Assistant Bubble */}
+      <AiAssistantBubble />
 
       {/* Current stop indicator */}
       {currentStop && (
