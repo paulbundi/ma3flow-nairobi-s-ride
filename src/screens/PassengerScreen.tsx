@@ -1,15 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import MatatuMap from '@/components/Map/MatatuMap';
 import { Button } from '@/components/ui/button';
-import { locationService, RouteStop, RouteType } from '@/services/LocationService';
+import { Input } from '@/components/ui/input';
+import { transitManager, Stop, Route, JourneyPlan } from '@/services/TransitManager';
 import { 
   ArrowLeft, 
   MapPin,
   Clock,
   Navigation,
   Bell,
-  CheckCircle2
+  CheckCircle2,
+  Search,
+  ArrowRight
 } from 'lucide-react';
 
 interface PassengerScreenProps {
@@ -17,61 +20,106 @@ interface PassengerScreenProps {
 }
 
 const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
-  const [currentStop, setCurrentStop] = useState<RouteStop | null>(null);
-  const [destination, setDestination] = useState<string | null>(null);
-  const [selectedRoute, setSelectedRoute] = useState<RouteType>('thika');
+  const [currentLocation, setCurrentLocation] = useState<Stop | null>(null);
+  const [destination, setDestination] = useState<Stop | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Stop[]>([]);
+  const [journeyPlan, setJourneyPlan] = useState<JourneyPlan | null>(null);
   const [isOnBoard, setIsOnBoard] = useState(false);
-  const [stops, setStops] = useState<RouteStop[]>([]);
+  const [journeyStops, setJourneyStops] = useState<Stop[]>([]);
+  const [currentStopIndex, setCurrentStopIndex] = useState(0);
   const [arrivedAtDestination, setArrivedAtDestination] = useState(false);
+  const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null);
 
+  // Initialize with simulated GPS location (Kencom)
   useEffect(() => {
-    setStops(locationService.getRoute());
-  }, [selectedRoute]);
+    const nearbyStops = transitManager.getNearbyStops(-1.2864, 36.8172, 500);
+    if (nearbyStops.length > 0) {
+      setCurrentLocation(nearbyStops[0]);
+      setUserPosition({ lat: nearbyStops[0].lat, lng: nearbyStops[0].lon });
+    }
+  }, []);
 
-  const handleRouteChange = (route: RouteType) => {
-    locationService.stopSimulation();
-    setSelectedRoute(route);
-    locationService.setRoute(route);
-    setStops(locationService.getRoute());
-    setDestination(null);
-    setIsOnBoard(false);
-    setArrivedAtDestination(false);
-  };
+  // Search for destinations
+  const handleSearch = useCallback((query: string) => {
+    setSearchQuery(query);
+    if (query.length >= 2) {
+      const results = transitManager.searchStops(query);
+      setSearchResults(results.filter(s => s.id !== currentLocation?.id));
+    } else {
+      setSearchResults([]);
+    }
+  }, [currentLocation]);
 
-  const handleSelectDestination = (stopName: string) => {
-    setDestination(stopName);
-  };
+  // Select destination and find route
+  const handleSelectDestination = useCallback((stop: Stop) => {
+    setDestination(stop);
+    setSearchQuery(stop.name);
+    setSearchResults([]);
 
-  const handleBoard = () => {
+    if (currentLocation) {
+      const plan = transitManager.findRoute(currentLocation, stop);
+      setJourneyPlan(plan || null);
+
+      // Build journey stops list
+      if (plan) {
+        const stops: Stop[] = [];
+        plan.segments.forEach(segment => {
+          const fromIdx = segment.route.stops.findIndex(s => s.id === segment.fromStop.id);
+          const toIdx = segment.route.stops.findIndex(s => s.id === segment.toStop.id);
+          
+          if (fromIdx !== -1 && toIdx !== -1) {
+            const start = Math.min(fromIdx, toIdx);
+            const end = Math.max(fromIdx, toIdx);
+            for (let i = start; i <= end; i++) {
+              if (!stops.find(s => s.id === segment.route.stops[i].id)) {
+                stops.push(segment.route.stops[i]);
+              }
+            }
+          }
+        });
+        setJourneyStops(stops);
+      }
+    }
+  }, [currentLocation]);
+
+  // Start journey simulation
+  const handleBoard = useCallback(() => {
+    if (!journeyPlan || journeyStops.length === 0) return;
+    
     setIsOnBoard(true);
-    locationService.startSimulation();
-  };
+    setCurrentStopIndex(0);
+    setUserPosition({ lat: journeyStops[0].lat, lng: journeyStops[0].lon });
+  }, [journeyPlan, journeyStops]);
+
+  // Animate journey
+  useEffect(() => {
+    if (!isOnBoard || journeyStops.length === 0) return;
+
+    const interval = setInterval(() => {
+      setCurrentStopIndex(prev => {
+        if (prev >= journeyStops.length - 1) {
+          setArrivedAtDestination(true);
+          setIsOnBoard(false);
+          clearInterval(interval);
+          return prev;
+        }
+        const nextIdx = prev + 1;
+        setUserPosition({ lat: journeyStops[nextIdx].lat, lng: journeyStops[nextIdx].lon });
+        return nextIdx;
+      });
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [isOnBoard, journeyStops]);
 
   const handleAlight = () => {
     setIsOnBoard(false);
-    locationService.stopSimulation();
     setDestination(null);
+    setJourneyPlan(null);
+    setJourneyStops([]);
     setArrivedAtDestination(false);
-  };
-
-  const handleStopReached = (stop: RouteStop) => {
-    setCurrentStop(stop);
-    
-    if (destination && stop.name === destination) {
-      setArrivedAtDestination(true);
-      locationService.stopSimulation();
-    }
-  };
-
-  const getStopStatus = (stop: RouteStop): 'passed' | 'current' | 'upcoming' => {
-    if (!currentStop) return 'upcoming';
-    
-    const currentIndex = stops.findIndex(s => s.name === currentStop.name);
-    const stopIndex = stops.findIndex(s => s.name === stop.name);
-    
-    if (stopIndex < currentIndex) return 'passed';
-    if (stopIndex === currentIndex) return 'current';
-    return 'upcoming';
+    setSearchQuery('');
   };
 
   return (
@@ -84,7 +132,7 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
           </Button>
           <div>
             <h1 className="font-display text-xl text-matatu-yellow">Passenger Mode</h1>
-            <p className="text-xs text-muted-foreground">Track your journey</p>
+            <p className="text-xs text-muted-foreground">Find your route</p>
           </div>
         </div>
         {isOnBoard && (
@@ -95,24 +143,37 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         )}
       </header>
 
-      {/* Route selector */}
-      <div className="bg-card/50 px-4 py-2 flex gap-2 border-b border-border">
-        <Button
-          variant={selectedRoute === 'thika' ? 'passenger' : 'outline'}
-          size="sm"
-          onClick={() => handleRouteChange('thika')}
-          disabled={isOnBoard}
-        >
-          Thika Road
-        </Button>
-        <Button
-          variant={selectedRoute === 'westlands' ? 'passenger' : 'outline'}
-          size="sm"
-          onClick={() => handleRouteChange('westlands')}
-          disabled={isOnBoard}
-        >
-          Westlands
-        </Button>
+      {/* Search section */}
+      <div className="bg-card/50 px-4 py-3 border-b border-border space-y-2">
+        <div className="flex items-center gap-2 text-sm">
+          <Navigation className="w-4 h-4 text-primary" />
+          <span className="text-muted-foreground">From:</span>
+          <span className="font-medium">{currentLocation?.name || 'Getting location...'}</span>
+        </div>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search destination..."
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            className="pl-10"
+            disabled={isOnBoard}
+          />
+          {searchResults.length > 0 && (
+            <div className="absolute top-full left-0 right-0 bg-card border border-border rounded-lg mt-1 max-h-48 overflow-y-auto z-50 shadow-lg">
+              {searchResults.map(stop => (
+                <button
+                  key={stop.id}
+                  className="w-full px-4 py-2 text-left hover:bg-muted transition-colors"
+                  onClick={() => handleSelectDestination(stop)}
+                >
+                  <MapPin className="w-4 h-4 inline mr-2 text-muted-foreground" />
+                  {stop.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Arrived notification */}
@@ -126,111 +187,84 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
             <CheckCircle2 className="w-5 h-5 text-matatu-green" />
             <div>
               <p className="font-medium text-matatu-green">You've arrived!</p>
-              <p className="text-sm text-muted-foreground">Destination: {destination}</p>
+              <p className="text-sm text-muted-foreground">Destination: {destination?.name}</p>
             </div>
           </div>
         </motion.div>
       )}
 
-      {/* Map */}
-      <div className="h-48 md:h-64 relative">
-        <MatatuMap mode="passenger" onStopReached={handleStopReached} />
-      </div>
-
-      {/* Journey info */}
-      <div className="bg-card border-y border-border px-4 py-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
-              <Navigation className="w-5 h-5 text-primary" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Current Location</p>
-              <p className="font-display text-lg">{currentStop?.name || 'Waiting...'}</p>
-            </div>
-          </div>
-          {destination && (
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Destination</p>
-              <p className="font-display text-lg text-matatu-yellow">{destination}</p>
-            </div>
-          )}
+      {/* Journey plan */}
+      {journeyPlan && !isOnBoard && (
+        <div className="bg-primary/10 px-4 py-3 border-b border-border">
+          <p className="text-xs text-muted-foreground mb-1">
+            {journeyPlan.type === 'direct' ? 'Direct Route' : 'Transfer Required'}
+          </p>
+          {journeyPlan.instructions.map((instruction, idx) => (
+            <p key={idx} className="text-sm flex items-center gap-2">
+              <ArrowRight className="w-3 h-3 text-primary" />
+              {instruction}
+            </p>
+          ))}
         </div>
+      )}
+
+      {/* Map */}
+      <div className="h-64 relative">
+        <MatatuMap 
+          mode="passenger" 
+          journeyStops={journeyStops}
+          userPosition={userPosition}
+          destinationStop={destination}
+        />
       </div>
 
-      {/* Stops list */}
-      <div className="flex-1 overflow-auto px-4 py-4">
-        <h3 className="font-display text-lg mb-3 flex items-center gap-2">
-          <MapPin className="w-4 h-4 text-primary" />
-          {isOnBoard ? 'Journey Progress' : 'Select Destination'}
-        </h3>
-        <div className="space-y-2">
-          {stops.map((stop, index) => {
-            const status = getStopStatus(stop);
-            const isDestination = stop.name === destination;
-            
-            return (
-              <motion.button
-                key={stop.name}
-                className={`w-full text-left p-3 rounded-lg border transition-all ${
-                  status === 'current' 
+      {/* Journey progress */}
+      {isOnBoard && journeyStops.length > 0 && (
+        <div className="flex-1 overflow-auto px-4 py-4">
+          <h3 className="font-display text-lg mb-3 flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-primary" />
+            Journey Progress
+          </h3>
+          <div className="space-y-2">
+            {journeyStops.map((stop, index) => (
+              <div
+                key={stop.id}
+                className={`p-3 rounded-lg border transition-all ${
+                  index === currentStopIndex 
                     ? 'bg-primary/20 border-primary' 
-                    : status === 'passed'
+                    : index < currentStopIndex
                     ? 'bg-muted/50 border-transparent opacity-50'
-                    : 'bg-card border-border hover:border-matatu-yellow'
-                } ${isDestination ? 'ring-2 ring-matatu-yellow' : ''}`}
-                onClick={() => !isOnBoard && handleSelectDestination(stop.name)}
-                disabled={isOnBoard || status === 'passed' || status === 'current'}
-                whileTap={{ scale: 0.98 }}
+                    : 'bg-card border-border'
+                } ${stop.id === destination?.id ? 'ring-2 ring-matatu-yellow' : ''}`}
               >
                 <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <div className={`w-3 h-3 rounded-full ${
-                      stop.isStage 
-                        ? status === 'current' ? 'bg-primary' : 'bg-matatu-yellow' 
-                        : 'bg-muted-foreground'
-                    }`} />
-                    {index < stops.length - 1 && (
-                      <div className={`absolute top-4 left-1/2 -translate-x-1/2 w-0.5 h-6 ${
-                        status === 'passed' ? 'bg-primary' : 'bg-border'
-                      }`} />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <p className={`font-medium ${status === 'current' ? 'text-primary' : ''}`}>
-                      {stop.name}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {stop.isStage ? 'Major Stage' : 'Bus Stop'}
-                    </p>
-                  </div>
-                  {isDestination && (
-                    <Bell className="w-4 h-4 text-matatu-yellow" />
-                  )}
-                  {status === 'current' && (
-                    <span className="text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full">
-                      Here
-                    </span>
-                  )}
+                  <div className={`w-3 h-3 rounded-full ${
+                    index === currentStopIndex ? 'bg-primary animate-pulse' : 
+                    index < currentStopIndex ? 'bg-muted-foreground' : 'bg-matatu-yellow'
+                  }`} />
+                  <span className={index === currentStopIndex ? 'text-primary font-medium' : ''}>
+                    {stop.name}
+                  </span>
+                  {stop.id === destination?.id && <Bell className="w-4 h-4 text-matatu-yellow ml-auto" />}
                 </div>
-              </motion.button>
-            );
-          })}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Controls */}
-      <div className="bg-card border-t border-border px-4 py-4">
+      <div className="bg-card border-t border-border px-4 py-4 mt-auto">
         {!isOnBoard ? (
           <Button
-            variant="passenger"
+            variant="default"
             size="lg"
-            className="w-full"
+            className="w-full bg-primary"
             onClick={handleBoard}
-            disabled={!destination}
+            disabled={!journeyPlan}
           >
-            <Clock className="w-5 h-5" />
-            {destination ? `Board to ${destination}` : 'Select a Destination'}
+            <Clock className="w-5 h-5 mr-2" />
+            {journeyPlan ? `Start Journey to ${destination?.name}` : 'Select a Destination'}
           </Button>
         ) : (
           <Button

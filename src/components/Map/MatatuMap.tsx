@@ -1,12 +1,19 @@
 import React, { useCallback, useState, useEffect } from 'react';
 import { GoogleMap, useLoadScript, Marker, Polyline } from '@react-google-maps/api';
-import { locationService, RouteStop } from '@/services/LocationService';
+import { Route, Stop } from '@/services/TransitManager';
 
 const GOOGLE_MAPS_API_KEY = 'AIzaSyDsDs-lucVY7kY4bAMoTjkMiEAD4fA492E';
 
 interface MatatuMapProps {
   mode: 'driver' | 'passenger';
-  onStopReached?: (stop: RouteStop) => void;
+  activeRoute?: Route | null;
+  currentPosition?: { lat: number; lng: number };
+  currentStopIndex?: number;
+  journeyStops?: Stop[];
+  userPosition?: { lat: number; lng: number } | null;
+  destinationStop?: Stop | null;
+  onStopReached?: (stop: Stop) => void;
+  onLegacyStopReached?: (stop: { name: string; coordinates: { lat: number; lng: number }; isStage: boolean }) => void;
 }
 
 const mapContainerStyle = {
@@ -14,7 +21,7 @@ const mapContainerStyle = {
   height: '100%',
 };
 
-const center = {
+const defaultCenter = {
   lat: -1.2921,
   lng: 36.8219,
 };
@@ -55,35 +62,41 @@ const darkMapStyles: google.maps.MapTypeStyle[] = [
   },
 ];
 
-const MatatuMap: React.FC<MatatuMapProps> = ({ mode, onStopReached }) => {
+const MatatuMap: React.FC<MatatuMapProps> = ({ 
+  mode, 
+  activeRoute,
+  currentPosition,
+  currentStopIndex = 0,
+  journeyStops,
+  userPosition,
+  destinationStop,
+  onStopReached
+}) => {
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: GOOGLE_MAPS_API_KEY,
   });
 
-  const [currentStop, setCurrentStop] = useState<RouteStop | null>(null);
-  const [matatuPosition, setMatatuPosition] = useState(center);
+  const [mapCenter, setMapCenter] = useState(currentPosition || defaultCenter);
 
-  const route = locationService.getRoute();
-  const routePath = route.map(stop => ({
-    lat: stop.coordinates.lat,
-    lng: stop.coordinates.lng,
-  }));
-
+  // Update center when position changes
   useEffect(() => {
-    const unsubscribe = locationService.subscribe((pos, stop) => {
-      setMatatuPosition({ lat: pos.lat, lng: pos.lng });
-      setCurrentStop(stop);
-      if (onStopReached) {
-        onStopReached(stop);
-      }
-    });
+    if (currentPosition) {
+      setMapCenter(currentPosition);
+    } else if (userPosition) {
+      setMapCenter(userPosition);
+    }
+  }, [currentPosition, userPosition]);
 
-    return () => unsubscribe();
-  }, [onStopReached]);
+  // Notify when stop is reached
+  useEffect(() => {
+    if (activeRoute && activeRoute.stops[currentStopIndex] && onStopReached) {
+      onStopReached(activeRoute.stops[currentStopIndex]);
+    }
+  }, [currentStopIndex, activeRoute, onStopReached]);
 
   const onLoad = useCallback((map: google.maps.Map) => {
-    map.panTo(matatuPosition);
-  }, [matatuPosition]);
+    map.panTo(mapCenter);
+  }, [mapCenter]);
 
   if (loadError) {
     return (
@@ -104,12 +117,24 @@ const MatatuMap: React.FC<MatatuMapProps> = ({ mode, onStopReached }) => {
     );
   }
 
+  // Build route path for polyline
+  const routePath = activeRoute?.stops.map(stop => ({
+    lat: stop.lat,
+    lng: stop.lon,
+  })) || [];
+
+  // Build journey path for passenger mode
+  const journeyPath = journeyStops?.map(stop => ({
+    lat: stop.lat,
+    lng: stop.lon,
+  })) || [];
+
   return (
     <div className="relative w-full h-full">
       <GoogleMap
         mapContainerStyle={mapContainerStyle}
-        center={matatuPosition}
-        zoom={13}
+        center={mapCenter}
+        zoom={14}
         options={{
           disableDefaultUI: false,
           zoomControl: true,
@@ -120,25 +145,39 @@ const MatatuMap: React.FC<MatatuMapProps> = ({ mode, onStopReached }) => {
         }}
         onLoad={onLoad}
       >
-        {/* Route line */}
-        <Polyline
-          path={routePath}
-          options={{
-            strokeColor: '#22c55e',
-            strokeOpacity: 0.8,
-            strokeWeight: 4,
-          }}
-        />
+        {/* Driver mode: Route line */}
+        {mode === 'driver' && routePath.length > 0 && (
+          <Polyline
+            path={routePath}
+            options={{
+              strokeColor: '#22c55e',
+              strokeOpacity: 0.8,
+              strokeWeight: 4,
+            }}
+          />
+        )}
 
-        {/* Route stops */}
-        {route.map((stop, index) => (
+        {/* Passenger mode: Journey line */}
+        {mode === 'passenger' && journeyPath.length > 0 && (
+          <Polyline
+            path={journeyPath}
+            options={{
+              strokeColor: '#3b82f6',
+              strokeOpacity: 0.9,
+              strokeWeight: 5,
+            }}
+          />
+        )}
+
+        {/* Route stops (driver mode - only active route) */}
+        {mode === 'driver' && activeRoute?.stops.map((stop, index) => (
           <Marker
-            key={index}
-            position={{ lat: stop.coordinates.lat, lng: stop.coordinates.lng }}
+            key={`route-${stop.id}`}
+            position={{ lat: stop.lat, lng: stop.lon }}
             icon={{
               path: window.google.maps.SymbolPath.CIRCLE,
-              scale: stop.isStage ? 8 : 5,
-              fillColor: stop.isStage ? '#facc15' : '#6b7280',
+              scale: index === currentStopIndex ? 10 : 6,
+              fillColor: index === currentStopIndex ? '#22c55e' : index < currentStopIndex ? '#6b7280' : '#facc15',
               fillOpacity: 1,
               strokeColor: '#ffffff',
               strokeWeight: 2,
@@ -147,33 +186,69 @@ const MatatuMap: React.FC<MatatuMapProps> = ({ mode, onStopReached }) => {
           />
         ))}
 
-        {/* Matatu marker */}
-        <Marker
-          position={matatuPosition}
-          icon={{
-            url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
-              <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
-                <circle cx="20" cy="20" r="18" fill="#22c55e" stroke="#ffffff" stroke-width="2"/>
-                <text x="20" y="26" text-anchor="middle" font-size="18">🚐</text>
-              </svg>
-            `),
-            scaledSize: new window.google.maps.Size(40, 40),
-            anchor: new window.google.maps.Point(20, 20),
-          }}
-          zIndex={1000}
-        />
+        {/* Journey stops (passenger mode) */}
+        {mode === 'passenger' && journeyStops?.map((stop, index) => (
+          <Marker
+            key={`journey-${stop.id}`}
+            position={{ lat: stop.lat, lng: stop.lon }}
+            icon={{
+              path: window.google.maps.SymbolPath.CIRCLE,
+              scale: stop.id === destinationStop?.id ? 12 : 7,
+              fillColor: stop.id === destinationStop?.id ? '#facc15' : '#3b82f6',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 2,
+            }}
+            title={stop.name}
+          />
+        ))}
+
+        {/* User position marker (passenger mode) */}
+        {mode === 'passenger' && userPosition && (
+          <Marker
+            position={userPosition}
+            icon={{
+              path: window.google.maps.SymbolPath.CIRCLE,
+              scale: 10,
+              fillColor: '#22c55e',
+              fillOpacity: 1,
+              strokeColor: '#ffffff',
+              strokeWeight: 3,
+            }}
+            title="Your Location"
+            zIndex={1000}
+          />
+        )}
+
+        {/* Matatu marker (driver mode) */}
+        {mode === 'driver' && currentPosition && (
+          <Marker
+            position={currentPosition}
+            icon={{
+              url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+                  <circle cx="20" cy="20" r="18" fill="#22c55e" stroke="#ffffff" stroke-width="2"/>
+                  <text x="20" y="26" text-anchor="middle" font-size="18">🚐</text>
+                </svg>
+              `),
+              scaledSize: new window.google.maps.Size(40, 40),
+              anchor: new window.google.maps.Point(20, 20),
+            }}
+            zIndex={1000}
+          />
+        )}
       </GoogleMap>
 
-      {/* Current stop overlay */}
-      {currentStop && (
+      {/* Current stop overlay (driver mode) */}
+      {mode === 'driver' && activeRoute?.stops[currentStopIndex] && (
         <div className="absolute bottom-4 left-4 right-4 bg-card/90 backdrop-blur-sm rounded-lg p-4 border border-border">
           <div className="flex items-center gap-3">
-            <div className={`w-3 h-3 rounded-full ${currentStop.isStage ? 'bg-matatu-yellow' : 'bg-muted-foreground'}`} />
+            <div className="w-3 h-3 rounded-full bg-matatu-green animate-pulse" />
             <div>
               <p className="text-xs text-muted-foreground uppercase tracking-wide">
-                {currentStop.isStage ? 'Major Stage' : 'Stop'}
+                Stop {currentStopIndex + 1} of {activeRoute.stops.length}
               </p>
-              <p className="font-display text-xl">{currentStop.name}</p>
+              <p className="font-display text-xl">{activeRoute.stops[currentStopIndex].name}</p>
             </div>
           </div>
         </div>

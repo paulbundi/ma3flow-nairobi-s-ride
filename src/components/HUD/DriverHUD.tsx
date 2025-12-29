@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { SimulationState } from '@/services/SimulationService';
+import { Route, Stop } from '@/services/TransitManager';
 import { 
   Gauge, 
   Users, 
@@ -8,14 +9,24 @@ import {
   CloudRain, 
   Clock, 
   Activity,
-  TrendingUp
+  TrendingUp,
+  MapPin,
+  Navigation
 } from 'lucide-react';
 
 interface DriverHUDProps {
   state: SimulationState;
+  nextStop?: Stop | null;
+  distanceToNextStop?: number;
+  currentRoute?: Route | null;
 }
 
-const DriverHUD: React.FC<DriverHUDProps> = ({ state }) => {
+const DriverHUD: React.FC<DriverHUDProps> = ({ 
+  state, 
+  nextStop, 
+  distanceToNextStop = 0,
+  currentRoute 
+}) => {
   const getTrafficColor = (health: number) => {
     if (health >= 70) return 'text-matatu-green';
     if (health >= 40) return 'text-matatu-yellow';
@@ -28,6 +39,13 @@ const DriverHUD: React.FC<DriverHUDProps> = ({ state }) => {
     return 'text-destructive';
   };
 
+  const formatDistance = (meters: number) => {
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(1)}km`;
+    }
+    return `${meters}m`;
+  };
+
   return (
     <motion.div 
       className="absolute top-0 left-0 right-0 z-20 p-4"
@@ -38,6 +56,12 @@ const DriverHUD: React.FC<DriverHUDProps> = ({ state }) => {
       <div className="bg-card/95 backdrop-blur-md rounded-xl border border-border shadow-lg overflow-hidden">
         {/* Status indicators row */}
         <div className="flex items-center gap-2 px-4 py-2 border-b border-border/50 bg-muted/30">
+          {currentRoute && (
+            <div className="flex items-center gap-1 px-2 py-1 bg-primary/20 rounded-full">
+              <MapPin className="w-3 h-3 text-primary" />
+              <span className="text-xs text-primary font-medium">Route {currentRoute.shortName}</span>
+            </div>
+          )}
           {state.isRaining && (
             <motion.div 
               className="flex items-center gap-1 px-2 py-1 bg-blue-500/20 rounded-full"
@@ -66,6 +90,20 @@ const DriverHUD: React.FC<DriverHUDProps> = ({ state }) => {
             </span>
           </div>
         </div>
+
+        {/* Next stop indicator */}
+        {nextStop && (
+          <div className="flex items-center gap-3 px-4 py-2 bg-matatu-yellow/10 border-b border-border/50">
+            <Navigation className="w-4 h-4 text-matatu-yellow" />
+            <div className="flex-1">
+              <span className="text-xs text-muted-foreground">Next Stop:</span>
+              <span className="ml-2 font-display text-matatu-yellow">{nextStop.name}</span>
+            </div>
+            <span className="text-sm font-medium text-matatu-yellow">
+              {formatDistance(distanceToNextStop)}
+            </span>
+          </div>
+        )}
 
         {/* Main stats row */}
         <div className="grid grid-cols-4 divide-x divide-border/50">

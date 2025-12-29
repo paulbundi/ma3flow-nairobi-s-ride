@@ -233,6 +233,14 @@ class SimulationService {
     return () => this.boardingListeners.delete(listener);
   }
 
+  triggerBoarding() {
+    const event = this.generateBoardingEvent();
+    if (event) {
+      this.boardingListeners.forEach(listener => listener(event));
+      this.notifyListeners();
+    }
+  }
+
   private notifyListeners() {
     const state = this.getState();
     this.listeners.forEach(listener => listener(state));
