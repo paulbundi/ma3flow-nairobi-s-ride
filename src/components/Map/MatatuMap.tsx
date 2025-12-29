@@ -1,192 +1,152 @@
-import React, { useEffect, useRef, useState } from 'react';
-import mapboxgl from 'mapbox-gl';
-import 'mapbox-gl/dist/mapbox-gl.css';
-import { locationService, Coordinates, RouteStop } from '@/services/LocationService';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { MapPin, Key } from 'lucide-react';
+import React, { useCallback, useState } from 'react';
+import { GoogleMap, LoadScript, Marker, Polyline } from '@react-google-maps/api';
+import { locationService, RouteStop } from '@/services/LocationService';
+
+const GOOGLE_MAPS_API_KEY = 'AIzaSyDsDs-lucVY7kY4bAMoTjkMiEAD4fA492E';
 
 interface MatatuMapProps {
   mode: 'driver' | 'passenger';
   onStopReached?: (stop: RouteStop) => void;
 }
 
+const mapContainerStyle = {
+  width: '100%',
+  height: '100%',
+};
+
+const center = {
+  lat: -1.2921,
+  lng: 36.8219,
+};
+
+const mapOptions: google.maps.MapOptions = {
+  disableDefaultUI: false,
+  zoomControl: true,
+  mapTypeControl: false,
+  streetViewControl: false,
+  fullscreenControl: false,
+  styles: [
+    { elementType: 'geometry', stylers: [{ color: '#1a1a2e' }] },
+    { elementType: 'labels.text.stroke', stylers: [{ color: '#1a1a2e' }] },
+    { elementType: 'labels.text.fill', stylers: [{ color: '#8b8b8b' }] },
+    {
+      featureType: 'road',
+      elementType: 'geometry',
+      stylers: [{ color: '#2d2d44' }],
+    },
+    {
+      featureType: 'road',
+      elementType: 'geometry.stroke',
+      stylers: [{ color: '#1a1a2e' }],
+    },
+    {
+      featureType: 'road.highway',
+      elementType: 'geometry',
+      stylers: [{ color: '#3d3d5c' }],
+    },
+    {
+      featureType: 'water',
+      elementType: 'geometry',
+      stylers: [{ color: '#0e0e1a' }],
+    },
+    {
+      featureType: 'poi',
+      elementType: 'geometry',
+      stylers: [{ color: '#1a1a2e' }],
+    },
+    {
+      featureType: 'poi.park',
+      elementType: 'geometry',
+      stylers: [{ color: '#1a3320' }],
+    },
+  ],
+};
+
 const MatatuMap: React.FC<MatatuMapProps> = ({ mode, onStopReached }) => {
-  const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<mapboxgl.Map | null>(null);
-  const marker = useRef<mapboxgl.Marker | null>(null);
   const [currentStop, setCurrentStop] = useState<RouteStop | null>(null);
-  const [mapboxToken, setMapboxToken] = useState<string>(
-    localStorage.getItem('mapbox_token') || ''
-  );
-  const [isTokenSet, setIsTokenSet] = useState<boolean>(
-    !!localStorage.getItem('mapbox_token')
-  );
+  const [matatuPosition, setMatatuPosition] = useState(center);
+  const [map, setMap] = useState<google.maps.Map | null>(null);
 
-  const handleSetToken = () => {
-    if (mapboxToken.trim()) {
-      localStorage.setItem('mapbox_token', mapboxToken.trim());
-      setIsTokenSet(true);
-    }
-  };
+  const route = locationService.getRoute();
+  const routePath = route.map(stop => ({
+    lat: stop.coordinates.lat,
+    lng: stop.coordinates.lng,
+  }));
 
-  useEffect(() => {
-    if (!mapContainer.current || !isTokenSet) return;
-
-    mapboxgl.accessToken = mapboxToken;
-
-    map.current = new mapboxgl.Map({
-      container: mapContainer.current,
-      style: 'mapbox://styles/mapbox/dark-v11',
-      center: [36.8219, -1.2921], // Nairobi CBD
-      zoom: 13,
-      pitch: 45,
-    });
-
-    map.current.addControl(
-      new mapboxgl.NavigationControl({
-        visualizePitch: true,
-      }),
-      'top-right'
-    );
-
-    // Create matatu marker element
-    const el = document.createElement('div');
-    el.className = 'matatu-marker';
-    el.innerHTML = `
-      <div class="relative">
-        <div class="absolute inset-0 bg-green-500 rounded-full animate-ping opacity-30"></div>
-        <div class="relative w-10 h-10 bg-gradient-to-br from-green-400 to-yellow-400 rounded-full flex items-center justify-center shadow-lg border-2 border-white">
-          <span class="text-lg">🚐</span>
-        </div>
-      </div>
-    `;
-
-    const { position } = locationService.getCurrentPosition();
-    marker.current = new mapboxgl.Marker(el)
-      .setLngLat([position.lng, position.lat])
-      .addTo(map.current);
-
-    // Add route stops markers
-    const route = locationService.getRoute();
-    route.forEach((stop, index) => {
-      const stopEl = document.createElement('div');
-      stopEl.className = 'stop-marker';
-      stopEl.innerHTML = `
-        <div class="w-4 h-4 ${stop.isStage ? 'bg-yellow-400' : 'bg-gray-400'} rounded-full border-2 border-white shadow-md"></div>
-      `;
-
-      new mapboxgl.Marker(stopEl)
-        .setLngLat([stop.coordinates.lng, stop.coordinates.lat])
-        .addTo(map.current!);
-    });
-
-    // Draw route line
-    map.current.on('load', () => {
-      const routeCoordinates = route.map(stop => [
-        stop.coordinates.lng,
-        stop.coordinates.lat,
-      ]);
-
-      map.current!.addSource('route', {
-        type: 'geojson',
-        data: {
-          type: 'Feature',
-          properties: {},
-          geometry: {
-            type: 'LineString',
-            coordinates: routeCoordinates,
-          },
-        },
-      });
-
-      map.current!.addLayer({
-        id: 'route',
-        type: 'line',
-        source: 'route',
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round',
-        },
-        paint: {
-          'line-color': '#22c55e',
-          'line-width': 4,
-          'line-opacity': 0.8,
-        },
-      });
-    });
-
+  const onLoad = useCallback((map: google.maps.Map) => {
+    setMap(map);
+    
     // Subscribe to location updates
-    const unsubscribe = locationService.subscribe((pos, stop) => {
-      if (marker.current) {
-        marker.current.setLngLat([pos.lng, pos.lat]);
-      }
-      if (map.current) {
-        map.current.easeTo({
-          center: [pos.lng, pos.lat],
-          duration: 1000,
-        });
-      }
+    locationService.subscribe((pos, stop) => {
+      setMatatuPosition({ lat: pos.lat, lng: pos.lng });
       setCurrentStop(stop);
       if (onStopReached) {
         onStopReached(stop);
       }
+      map.panTo({ lat: pos.lat, lng: pos.lng });
     });
+  }, [onStopReached]);
 
-    return () => {
-      unsubscribe();
-      map.current?.remove();
-    };
-  }, [isTokenSet, mapboxToken, onStopReached]);
-
-  if (!isTokenSet) {
-    return (
-      <div className="relative w-full h-full bg-card rounded-lg flex items-center justify-center">
-        <div className="max-w-md w-full p-6 space-y-4">
-          <div className="text-center space-y-2">
-            <div className="w-16 h-16 mx-auto bg-primary/20 rounded-full flex items-center justify-center">
-              <Key className="w-8 h-8 text-primary" />
-            </div>
-            <h3 className="font-display text-2xl">Mapbox API Key Required</h3>
-            <p className="text-muted-foreground text-sm">
-              To display the map, please enter your Mapbox public token. 
-              Get one free at{' '}
-              <a 
-                href="https://mapbox.com" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                mapbox.com
-              </a>
-            </p>
-          </div>
-          <div className="space-y-3">
-            <Input
-              type="text"
-              placeholder="pk.eyJ1..."
-              value={mapboxToken}
-              onChange={(e) => setMapboxToken(e.target.value)}
-              className="bg-muted border-border"
-            />
-            <Button 
-              onClick={handleSetToken} 
-              className="w-full"
-              disabled={!mapboxToken.trim()}
-            >
-              <MapPin className="w-4 h-4 mr-2" />
-              Enable Map
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const onUnmount = useCallback(() => {
+    setMap(null);
+  }, []);
 
   return (
     <div className="relative w-full h-full">
-      <div ref={mapContainer} className="absolute inset-0 rounded-lg overflow-hidden" />
-      
+      <LoadScript googleMapsApiKey={GOOGLE_MAPS_API_KEY}>
+        <GoogleMap
+          mapContainerStyle={mapContainerStyle}
+          center={center}
+          zoom={13}
+          options={mapOptions}
+          onLoad={onLoad}
+          onUnmount={onUnmount}
+        >
+          {/* Route line */}
+          <Polyline
+            path={routePath}
+            options={{
+              strokeColor: '#22c55e',
+              strokeOpacity: 0.8,
+              strokeWeight: 4,
+            }}
+          />
+
+          {/* Route stops */}
+          {route.map((stop, index) => (
+            <Marker
+              key={index}
+              position={{ lat: stop.coordinates.lat, lng: stop.coordinates.lng }}
+              icon={{
+                path: google.maps.SymbolPath.CIRCLE,
+                scale: stop.isStage ? 8 : 5,
+                fillColor: stop.isStage ? '#facc15' : '#6b7280',
+                fillOpacity: 1,
+                strokeColor: '#ffffff',
+                strokeWeight: 2,
+              }}
+              title={stop.name}
+            />
+          ))}
+
+          {/* Matatu marker */}
+          <Marker
+            position={matatuPosition}
+            icon={{
+              url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+                  <circle cx="20" cy="20" r="18" fill="#22c55e" stroke="#ffffff" stroke-width="2"/>
+                  <text x="20" y="26" text-anchor="middle" font-size="18">🚐</text>
+                </svg>
+              `),
+              scaledSize: new google.maps.Size(40, 40),
+              anchor: new google.maps.Point(20, 20),
+            }}
+            zIndex={1000}
+          />
+        </GoogleMap>
+      </LoadScript>
+
       {/* Current stop overlay */}
       {currentStop && (
         <div className="absolute bottom-4 left-4 right-4 bg-card/90 backdrop-blur-sm rounded-lg p-4 border border-border">
