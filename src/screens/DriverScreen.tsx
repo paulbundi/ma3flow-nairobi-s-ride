@@ -1,215 +1,180 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import MatatuMap from '@/components/Map/MatatuMap';
+import DriverHUD from '@/components/HUD/DriverHUD';
+import SimulationControls from '@/components/HUD/SimulationControls';
+import BoardingToast from '@/components/HUD/BoardingToast';
 import { Button } from '@/components/ui/button';
 import { locationService, RouteStop, RouteType } from '@/services/LocationService';
-import { matatuService, MatatuState } from '@/services/MatatuService';
-import { 
-  Play, 
-  Pause, 
-  ArrowLeft, 
-  Users, 
-  Banknote, 
-  MapPin,
-  Gauge,
-  RotateCcw
-} from 'lucide-react';
+import { useSimulation, useBoardingEvents } from '@/hooks/useSimulation';
+import { BoardingEvent } from '@/services/SimulationService';
+import { ArrowLeft, Route } from 'lucide-react';
 
 interface DriverScreenProps {
   onBack: () => void;
 }
 
 const DriverScreen: React.FC<DriverScreenProps> = ({ onBack }) => {
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [matatuState, setMatatuState] = useState<MatatuState>(matatuService.getState());
-  const [currentStop, setCurrentStop] = useState<RouteStop | null>(null);
+  const {
+    state: simState,
+    isRunning,
+    start,
+    stop,
+    reset,
+    setRaining,
+    setTrafficHealth,
+  } = useSimulation();
+
   const [selectedRoute, setSelectedRoute] = useState<RouteType>('thika');
-  const [totalEarnings, setTotalEarnings] = useState(0);
-  const [showPassengerAlert, setShowPassengerAlert] = useState(false);
+  const [currentStop, setCurrentStop] = useState<RouteStop | null>(null);
+  const [showRouteSelector, setShowRouteSelector] = useState(false);
+  
+  // Boarding toast state
+  const [currentBoardingEvent, setCurrentBoardingEvent] = useState<BoardingEvent | null>(null);
+  const [showBoardingToast, setShowBoardingToast] = useState(false);
 
-  useEffect(() => {
-    const unsubscribe = matatuService.subscribe((state) => {
-      setMatatuState(state);
-      setTotalEarnings(matatuService.getTotalEarnings());
-    });
-
-    return () => unsubscribe();
+  // Handle boarding events
+  const handleBoardingEvent = useCallback((event: BoardingEvent) => {
+    setCurrentBoardingEvent(event);
+    setShowBoardingToast(true);
+    
+    // Hide toast after 3 seconds
+    setTimeout(() => {
+      setShowBoardingToast(false);
+    }, 3000);
   }, []);
 
-  const handleToggleSimulation = () => {
-    if (isSimulating) {
-      locationService.stopSimulation();
-      matatuService.endDuty();
-    } else {
+  useBoardingEvents(handleBoardingEvent);
+
+  // Sync location service with simulation
+  useEffect(() => {
+    if (isRunning) {
       locationService.startSimulation();
-      matatuService.startDuty();
+    } else {
+      locationService.stopSimulation();
     }
-    setIsSimulating(!isSimulating);
-  };
+  }, [isRunning]);
 
   const handleRouteChange = (route: RouteType) => {
-    locationService.stopSimulation();
-    setIsSimulating(false);
+    stop();
+    reset();
     setSelectedRoute(route);
     locationService.setRoute(route);
+    setShowRouteSelector(false);
   };
 
   const handleStopReached = (stop: RouteStop) => {
     setCurrentStop(stop);
-    
-    // Simulate passengers alighting
-    if (stop.isStage && matatuState.passengers.length > 0) {
-      const alighting = matatuService.alightPassengersAtStop(stop.name);
-      if (alighting.length > 0) {
-        setShowPassengerAlert(true);
-        setTimeout(() => setShowPassengerAlert(false), 2000);
-      }
-    }
-    
-    // Simulate passengers boarding at stages
-    if (stop.isStage && Math.random() > 0.5) {
-      const destinations = locationService.getRoute()
-        .filter(s => s.name !== stop.name)
-        .map(s => s.name);
-      
-      if (destinations.length > 0) {
-        const randomDestination = destinations[Math.floor(Math.random() * destinations.length)];
-        matatuService.boardPassenger(stop.name, randomDestination);
-      }
-    }
   };
 
-  const handleReset = () => {
+  const handleBack = () => {
+    stop();
+    reset();
     locationService.stopSimulation();
-    setIsSimulating(false);
-    matatuService.resetDay();
-    locationService.jumpToStop(0);
+    onBack();
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
-      <header className="bg-card border-b border-border px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="w-5 h-5" />
-          </Button>
-          <div>
-            <h1 className="font-display text-xl text-matatu-green">Driver Mode</h1>
-            <p className="text-xs text-muted-foreground">{matatuState.name}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground uppercase tracking-wide">
-            {matatuState.id}
-          </span>
-          <div className={`w-2 h-2 rounded-full ${isSimulating ? 'bg-matatu-green animate-pulse' : 'bg-muted-foreground'}`} />
-        </div>
-      </header>
-
-      {/* Route selector */}
-      <div className="bg-card/50 px-4 py-2 flex gap-2 border-b border-border">
-        <Button
-          variant={selectedRoute === 'thika' ? 'driver' : 'outline'}
-          size="sm"
-          onClick={() => handleRouteChange('thika')}
+    <div className="min-h-screen bg-background relative overflow-hidden">
+      {/* Back button - floating */}
+      <motion.div 
+        className="absolute top-4 left-4 z-30"
+        initial={{ opacity: 0, x: -20 }}
+        animate={{ opacity: 1, x: 0 }}
+      >
+        <Button 
+          variant="outline" 
+          size="icon" 
+          onClick={handleBack}
+          className="bg-card/90 backdrop-blur-sm border-border"
         >
-          Thika Road
+          <ArrowLeft className="w-5 h-5" />
         </Button>
-        <Button
-          variant={selectedRoute === 'westlands' ? 'driver' : 'outline'}
-          size="sm"
-          onClick={() => handleRouteChange('westlands')}
-        >
-          Westlands
-        </Button>
-      </div>
+      </motion.div>
 
-      {/* Map */}
-      <div className="flex-1 relative">
+      {/* Route selector button */}
+      <motion.div 
+        className="absolute top-4 right-4 z-30"
+        initial={{ opacity: 0, x: 20 }}
+        animate={{ opacity: 1, x: 0 }}
+      >
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={() => setShowRouteSelector(!showRouteSelector)}
+          className="bg-card/90 backdrop-blur-sm border-border"
+        >
+          <Route className="w-4 h-4 mr-2" />
+          {selectedRoute === 'thika' ? 'Thika Rd' : 'Westlands'}
+        </Button>
+      </motion.div>
+
+      {/* Route selector dropdown */}
+      {showRouteSelector && (
+        <motion.div 
+          className="absolute top-16 right-4 z-30 bg-card rounded-lg border border-border shadow-lg overflow-hidden"
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <button
+            className={`w-full px-4 py-3 text-left hover:bg-muted transition-colors ${selectedRoute === 'thika' ? 'bg-primary/10 text-primary' : ''}`}
+            onClick={() => handleRouteChange('thika')}
+          >
+            Thika Road
+          </button>
+          <button
+            className={`w-full px-4 py-3 text-left hover:bg-muted transition-colors ${selectedRoute === 'westlands' ? 'bg-primary/10 text-primary' : ''}`}
+            onClick={() => handleRouteChange('westlands')}
+          >
+            Westlands
+          </button>
+        </motion.div>
+      )}
+
+      {/* Full screen map */}
+      <div className="absolute inset-0">
         <MatatuMap mode="driver" onStopReached={handleStopReached} />
-        
-        {/* Passenger alert */}
-        <AnimatePresence>
-          {showPassengerAlert && (
-            <motion.div
-              className="absolute top-4 left-1/2 -translate-x-1/2 bg-matatu-yellow text-primary-foreground px-4 py-2 rounded-lg font-medium"
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-            >
-              Passengers alighting!
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
 
-      {/* Stats bar */}
-      <div className="bg-card border-t border-border px-4 py-3">
-        <div className="grid grid-cols-4 gap-4">
-          <div className="text-center">
-            <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-              <Users className="w-4 h-4" />
-            </div>
-            <p className="font-display text-2xl">{matatuState.passengers.length}</p>
-            <p className="text-xs text-muted-foreground">/{matatuState.capacity}</p>
-          </div>
-          <div className="text-center">
-            <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-              <Banknote className="w-4 h-4" />
-            </div>
-            <p className="font-display text-2xl text-matatu-green">
-              {totalEarnings}
-            </p>
-            <p className="text-xs text-muted-foreground">KSh</p>
-          </div>
-          <div className="text-center">
-            <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-              <MapPin className="w-4 h-4" />
-            </div>
-            <p className="font-display text-lg truncate">
-              {currentStop?.name || '-'}
-            </p>
-            <p className="text-xs text-muted-foreground">Stop</p>
-          </div>
-          <div className="text-center">
-            <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-              <Gauge className="w-4 h-4" />
-            </div>
-            <p className="font-display text-2xl">50</p>
-            <p className="text-xs text-muted-foreground">KSh/fare</p>
-          </div>
-        </div>
-      </div>
+      {/* HUD Overlay */}
+      <DriverHUD state={simState} />
 
-      {/* Controls */}
-      <div className="bg-card border-t border-border px-4 py-4 flex gap-3">
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={handleReset}
+      {/* Boarding Toast */}
+      <BoardingToast 
+        event={currentBoardingEvent} 
+        isVisible={showBoardingToast} 
+      />
+
+      {/* Current stop indicator */}
+      {currentStop && (
+        <motion.div 
+          className="absolute bottom-36 left-4 right-4 z-20"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
         >
-          <RotateCcw className="w-5 h-5" />
-        </Button>
-        <Button
-          variant="driver"
-          size="lg"
-          className="flex-1"
-          onClick={handleToggleSimulation}
-        >
-          {isSimulating ? (
-            <>
-              <Pause className="w-5 h-5" />
-              Stop Route
-            </>
-          ) : (
-            <>
-              <Play className="w-5 h-5" />
-              Start Route
-            </>
-          )}
-        </Button>
-      </div>
+          <div className="bg-card/90 backdrop-blur-sm rounded-lg p-3 border border-border inline-flex items-center gap-3">
+            <div className={`w-3 h-3 rounded-full ${currentStop.isStage ? 'bg-matatu-yellow' : 'bg-muted-foreground'} ${isRunning ? 'animate-pulse' : ''}`} />
+            <div>
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                {currentStop.isStage ? 'Stage' : 'Stop'}
+              </p>
+              <p className="font-display text-lg">{currentStop.name}</p>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Simulation Controls */}
+      <SimulationControls
+        state={simState}
+        isRunning={isRunning}
+        onStart={start}
+        onStop={stop}
+        onReset={reset}
+        onSetRaining={setRaining}
+        onSetTrafficHealth={setTrafficHealth}
+        onBack={handleBack}
+      />
     </div>
   );
 };
