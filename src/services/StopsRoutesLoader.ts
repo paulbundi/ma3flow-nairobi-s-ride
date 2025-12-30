@@ -13,10 +13,12 @@ export interface Route {
 }
 
 export interface JourneySegment {
-  route: Route;
+  route: Route | null; // null for walking segments
   fromStop: Stop;
   toStop: Stop;
   stops: Stop[];
+  isWalking?: boolean;
+  walkingDistance?: number;
 }
 
 export interface Journey {
@@ -24,8 +26,42 @@ export interface Journey {
   totalStops: Stop[];
 }
 
+// CBD Transfer Zones - stops in the same zone can be walked between
+const CBD_TRANSFER_ZONES = [
+  {
+    name: 'CBD Central',
+    stopNames: ['odeon', 'otc', 'koja', 'kencom', 'bus station', 'gpo', 'commercial', 'tusker', 'archives', 'ronald ngala', 'fire station', 'landhies'],
+    center: { lat: -1.284, lon: 36.827 },
+    radius: 800 // meters
+  },
+  {
+    name: 'CBD East',
+    stopNames: ['machakos', 'muthurwa', 'railway'],
+    center: { lat: -1.290, lon: 36.835 },
+    radius: 600
+  },
+  {
+    name: 'Eastleigh',
+    stopNames: ['eastleigh', 'pumwani', 'california'],
+    center: { lat: -1.271, lon: 36.852 },
+    radius: 800
+  }
+];
+
 let stopsCache: Stop[] | null = null;
 let routesCache: Route[] | null = null;
+
+// Haversine distance calculation in meters
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000; // Earth's radius in meters
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 export async function loadStops(): Promise<Stop[]> {
   if (stopsCache) return stopsCache;
@@ -42,7 +78,7 @@ export async function loadStops(): Promise<Stop[]> {
       lat: parseFloat(lat),
       lon: parseFloat(lon)
     };
-  });
+  }).filter(s => !isNaN(s.lat) && !isNaN(s.lon));
 
   return stopsCache;
 }
@@ -50,17 +86,28 @@ export async function loadStops(): Promise<Stop[]> {
 function findStopByName(routeName: string, stops: Stop[]): Stop | undefined {
   const routeNameLower = routeName.toLowerCase().trim();
   
+  // Try exact match first
   let stop = stops.find(s => s.name.toLowerCase() === routeNameLower);
   if (stop) return stop;
   
+  // Try starts with
   stop = stops.find(s => s.name.toLowerCase().startsWith(routeNameLower));
   if (stop) return stop;
   
+  // Try reverse starts with
   stop = stops.find(s => routeNameLower.startsWith(s.name.toLowerCase()));
   if (stop) return stop;
   
+  // Try contains
   stop = stops.find(s => s.name.toLowerCase().includes(routeNameLower));
   if (stop) return stop;
+  
+  // Try word matching for compound names
+  const routeWords = routeNameLower.split(/[\s-]+/).filter(w => w.length > 2);
+  for (const word of routeWords) {
+    stop = stops.find(s => s.name.toLowerCase().includes(word));
+    if (stop) return stop;
+  }
   
   return undefined;
 }
@@ -108,18 +155,21 @@ export async function searchStops(query: string): Promise<Stop[]> {
   return stops.filter(stop => stop.name.toLowerCase().includes(lowerQuery));
 }
 
+// Check if a route stop matches a user-selected stop (with fuzzy matching)
 function stopMatches(routeStop: Stop, userStop: Stop): boolean {
+  // Exact ID match
   if (routeStop.id === userStop.id) return true;
   
+  // Name-based matching
   const routeNameLower = routeStop.name.toLowerCase();
   const userNameLower = userStop.name.toLowerCase();
   
   if (routeNameLower === userNameLower) return true;
+  if (routeNameLower.includes(userNameLower) || userNameLower.includes(routeNameLower)) return true;
   
-  if (routeNameLower.startsWith(userNameLower) || userNameLower.startsWith(routeNameLower)) return true;
-  
-  const userWords = userNameLower.split(/\s+/).filter(w => w.length > 2);
-  const routeWords = routeNameLower.split(/\s+/).filter(w => w.length > 2);
+  // Word-based matching for compound names
+  const userWords = userNameLower.split(/[\s-]+/).filter(w => w.length > 2);
+  const routeWords = routeNameLower.split(/[\s-]+/).filter(w => w.length > 2);
   
   for (const userWord of userWords) {
     for (const routeWord of routeWords) {
@@ -127,30 +177,83 @@ function stopMatches(routeStop: Stop, userStop: Stop): boolean {
     }
   }
   
+  // Geographic proximity check (within 300m)
+  const distance = haversineDistance(routeStop.lat, routeStop.lon, userStop.lat, userStop.lon);
+  if (distance < 300) return true;
+  
   return false;
+}
+
+// Check if two stops are in the same CBD transfer zone
+function areStopsInSameCBDZone(stop1: Stop, stop2: Stop): { inSameZone: boolean; zoneName?: string; walkDistance?: number } {
+  const stop1NameLower = stop1.name.toLowerCase();
+  const stop2NameLower = stop2.name.toLowerCase();
+  
+  for (const zone of CBD_TRANSFER_ZONES) {
+    const stop1InZone = zone.stopNames.some(name => stop1NameLower.includes(name) || name.includes(stop1NameLower)) ||
+      haversineDistance(stop1.lat, stop1.lon, zone.center.lat, zone.center.lon) < zone.radius;
+    
+    const stop2InZone = zone.stopNames.some(name => stop2NameLower.includes(name) || name.includes(stop2NameLower)) ||
+      haversineDistance(stop2.lat, stop2.lon, zone.center.lat, zone.center.lon) < zone.radius;
+    
+    if (stop1InZone && stop2InZone) {
+      return {
+        inSameZone: true,
+        zoneName: zone.name,
+        walkDistance: haversineDistance(stop1.lat, stop1.lon, stop2.lat, stop2.lon)
+      };
+    }
+  }
+  
+  // Also check direct proximity (< 800m walking distance)
+  const directDistance = haversineDistance(stop1.lat, stop1.lon, stop2.lat, stop2.lon);
+  if (directDistance < 800) {
+    return { inSameZone: true, zoneName: 'Walking Transfer', walkDistance: directDistance };
+  }
+  
+  return { inSameZone: false };
+}
+
+// Find CBD hub stops for a route
+function findCBDHubsOnRoute(route: Route): Stop[] {
+  const hubs: Stop[] = [];
+  
+  for (const stop of route.stops) {
+    const stopNameLower = stop.name.toLowerCase();
+    for (const zone of CBD_TRANSFER_ZONES) {
+      const isHub = zone.stopNames.some(name => stopNameLower.includes(name) || name.includes(stopNameLower));
+      if (isHub && !hubs.find(h => h.id === stop.id)) {
+        hubs.push(stop);
+      }
+    }
+  }
+  
+  return hubs;
 }
 
 export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Journey | null> {
   const routes = await loadRoutes();
   
+  // Find routes that serve fromStop
   const fromRoutes = routes.filter(r => 
     r.stops.some(s => stopMatches(s, fromStop))
   );
   
-  console.log(`From routes for ${fromStop.name}:`, fromRoutes.map(r => ({ id: r.id, shortName: r.shortName, stops: r.stops.map(s => s.name) })));
+  console.log(`Routes serving ${fromStop.name}:`, fromRoutes.map(r => r.shortName));
   if (fromRoutes.length === 0) return null;
 
+  // Find routes that serve toStop
   const toRoutes = routes.filter(r => 
     r.stops.some(s => stopMatches(s, toStop))
   );
   
-  console.log(`To routes for ${toStop.name}:`, toRoutes.map(r => ({ id: r.id, shortName: r.shortName, stops: r.stops.map(s => s.name) })));
+  console.log(`Routes serving ${toStop.name}:`, toRoutes.map(r => r.shortName));
   if (toRoutes.length === 0) return null;
 
   let bestJourney: Journey | null = null;
-  let minStops = Infinity;
+  let bestScore = Infinity;
 
-  // Try direct routes
+  // === Strategy 1: Try direct routes ===
   for (const route of fromRoutes) {
     const fromStopInRoute = route.stops.find(s => stopMatches(s, fromStop));
     const toStopInRoute = route.stops.find(s => stopMatches(s, toStop));
@@ -160,90 +263,184 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
     const fromIdx = route.stops.indexOf(fromStopInRoute);
     const toIdx = route.stops.indexOf(toStopInRoute);
     
-    if (fromIdx !== -1 && toIdx !== -1 && fromIdx < toIdx) {
-      const journey = {
+    // Check both directions
+    const directIdx = fromIdx < toIdx ? { from: fromIdx, to: toIdx } : null;
+    const reverseIdx = fromIdx > toIdx ? { from: toIdx, to: fromIdx } : null;
+    
+    const validIdx = directIdx || reverseIdx;
+    if (!validIdx) continue;
+    
+    const segmentStops = route.stops.slice(validIdx.from, validIdx.to + 1);
+    const score = segmentStops.length; // Direct routes get a bonus
+    
+    console.log(`Direct route: ${route.shortName} with ${segmentStops.length} stops`);
+    
+    if (score < bestScore) {
+      bestScore = score;
+      bestJourney = {
         segments: [{
           route,
           fromStop,
           toStop,
-          stops: route.stops.slice(fromIdx, toIdx + 1)
+          stops: directIdx ? segmentStops : segmentStops.reverse()
         }],
-        totalStops: route.stops.slice(fromIdx, toIdx + 1)
+        totalStops: directIdx ? segmentStops : segmentStops.reverse()
       };
-      console.log(`Direct route found: ${route.shortName} with ${journey.totalStops.length} stops`);
-      if (journey.totalStops.length < minStops) {
-        minStops = journey.totalStops.length;
-        bestJourney = journey;
-      }
     }
   }
 
-  // Try routes with one transfer
+  // === Strategy 2: CBD Zone-based transfers ===
   for (const fromRoute of fromRoutes) {
     const fromStopInRoute = fromRoute.stops.find(s => stopMatches(s, fromStop));
     if (!fromStopInRoute) continue;
     
     const fromIdx = fromRoute.stops.indexOf(fromStopInRoute);
-    if (fromIdx === -1) continue;
-
-    for (let i = fromIdx + 1; i < fromRoute.stops.length; i++) {
-      const intermediateStop = fromRoute.stops[i];
+    
+    // Find CBD hubs this route goes to
+    const fromRouteHubs = findCBDHubsOnRoute(fromRoute);
+    
+    for (const toRoute of toRoutes) {
+      // Skip if same route (already handled above)
+      if (fromRoute.id === toRoute.id) continue;
       
-      for (const toRoute of toRoutes) {
-        // Check if toRoute has this intermediate stop
-        const intermediateIdx = toRoute.stops.findIndex(s => stopMatches(s, intermediateStop));
+      const toStopInRoute = toRoute.stops.find(s => stopMatches(s, toStop));
+      if (!toStopInRoute) continue;
+      
+      const toIdx = toRoute.stops.indexOf(toStopInRoute);
+      
+      // Find CBD hubs on toRoute
+      const toRouteHubs = findCBDHubsOnRoute(toRoute);
+      
+      // Check for zone-based transfer opportunities
+      for (const fromHub of fromRouteHubs) {
+        const fromHubIdx = fromRoute.stops.indexOf(fromHub);
+        if (fromHubIdx <= fromIdx) continue; // Must be after boarding point
         
-        if (intermediateIdx === -1) {
-          if (fromRoute.shortName === '30' && toRoute.shortName === '16/62') {
-            console.log(`Route 30 stop "${intermediateStop.name}" not found in route 16/62`);
+        for (const toHub of toRouteHubs) {
+          const toHubIdx = toRoute.stops.indexOf(toHub);
+          if (toHubIdx >= toIdx) continue; // Must be before alighting point
+          
+          // Check if these hubs are in the same CBD zone
+          const zoneMatch = areStopsInSameCBDZone(fromHub, toHub);
+          if (!zoneMatch.inSameZone) continue;
+          
+          const segment1 = fromRoute.stops.slice(fromIdx, fromHubIdx + 1);
+          const segment2 = toRoute.stops.slice(toHubIdx, toIdx + 1);
+          
+          // Score: total stops + transfer penalty + walking distance penalty
+          const walkPenalty = (zoneMatch.walkDistance || 0) / 200; // 200m = 1 stop equivalent
+          const score = segment1.length + segment2.length + 2 + walkPenalty;
+          
+          console.log(`Transfer route: ${fromRoute.shortName} → ${toRoute.shortName} via ${fromHub.name}↔${toHub.name} (${zoneMatch.zoneName}, ${Math.round(zoneMatch.walkDistance || 0)}m walk) - Score: ${score.toFixed(1)}`);
+          
+          if (score < bestScore) {
+            bestScore = score;
+            
+            const segments: JourneySegment[] = [
+              {
+                route: fromRoute,
+                fromStop,
+                toStop: fromHub,
+                stops: segment1
+              }
+            ];
+            
+            // Add walking segment if different stops
+            if (fromHub.id !== toHub.id) {
+              segments.push({
+                route: null,
+                fromStop: fromHub,
+                toStop: toHub,
+                stops: [fromHub, toHub],
+                isWalking: true,
+                walkingDistance: zoneMatch.walkDistance
+              });
+            }
+            
+            segments.push({
+              route: toRoute,
+              fromStop: toHub,
+              toStop,
+              stops: segment2
+            });
+            
+            bestJourney = {
+              segments,
+              totalStops: [...segment1, ...segment2.slice(1)]
+            };
           }
-          continue;
         }
+      }
+      
+      // === Strategy 3: Any overlapping stop transfer ===
+      for (let i = fromIdx + 1; i < fromRoute.stops.length; i++) {
+        const intermediateStop = fromRoute.stops[i];
         
-        const toStopInRoute = toRoute.stops.find(s => stopMatches(s, toStop));
-        if (!toStopInRoute) continue;
-        
-        const toIdx = toRoute.stops.indexOf(toStopInRoute);
-        if (toIdx === -1 || intermediateIdx >= toIdx) continue;
-        
-        const segment1 = fromRoute.stops.slice(fromIdx, i + 1);
-        const segment2 = toRoute.stops.slice(intermediateIdx, toIdx + 1);
-        const totalStops = [...segment1, ...segment2.slice(1)];
-        
-        console.log(`Transfer route: ${fromRoute.shortName} -> ${toRoute.shortName} via ${intermediateStop.name} (${totalStops.length} stops)`);
-        
-        if (totalStops.length < minStops) {
-          minStops = totalStops.length;
-          bestJourney = {
-            segments: [
+        for (let j = 0; j < toIdx; j++) {
+          const toRouteStop = toRoute.stops[j];
+          
+          // Check direct match or zone match
+          const directMatch = stopMatches(intermediateStop, toRouteStop);
+          const zoneMatch = !directMatch ? areStopsInSameCBDZone(intermediateStop, toRouteStop) : { inSameZone: false };
+          
+          if (!directMatch && !zoneMatch.inSameZone) continue;
+          
+          const segment1 = fromRoute.stops.slice(fromIdx, i + 1);
+          const segment2 = toRoute.stops.slice(j, toIdx + 1);
+          
+          const walkPenalty = zoneMatch.inSameZone ? (zoneMatch.walkDistance || 0) / 200 : 0;
+          const score = segment1.length + segment2.length + 2 + walkPenalty;
+          
+          if (score < bestScore) {
+            bestScore = score;
+            
+            const segments: JourneySegment[] = [
               {
                 route: fromRoute,
                 fromStop,
                 toStop: intermediateStop,
                 stops: segment1
-              },
-              {
-                route: toRoute,
-                fromStop: intermediateStop,
-                toStop,
-                stops: segment2
               }
-            ],
-            totalStops
-          };
+            ];
+            
+            // Add walking segment if zone transfer
+            if (zoneMatch.inSameZone && intermediateStop.id !== toRouteStop.id) {
+              segments.push({
+                route: null,
+                fromStop: intermediateStop,
+                toStop: toRouteStop,
+                stops: [intermediateStop, toRouteStop],
+                isWalking: true,
+                walkingDistance: zoneMatch.walkDistance
+              });
+            }
+            
+            segments.push({
+              route: toRoute,
+              fromStop: directMatch ? intermediateStop : toRouteStop,
+              toStop,
+              stops: segment2
+            });
+            
+            bestJourney = {
+              segments,
+              totalStops: [...segment1, ...segment2.slice(1)]
+            };
+          }
         }
       }
     }
   }
 
   if (bestJourney) {
-    console.log('Optimal route selected:', bestJourney.segments.map(s => ({
-      routeId: s.route.id,
-      routeShortName: s.route.shortName,
-      from: s.fromStop.name,
-      to: s.toStop.name,
-      stops: s.stops.map(st => st.name)
-    })));
+    console.log('=== Optimal Journey ===');
+    bestJourney.segments.forEach((seg, idx) => {
+      if (seg.isWalking) {
+        console.log(`  ${idx + 1}. WALK from ${seg.fromStop.name} to ${seg.toStop.name} (${Math.round(seg.walkingDistance || 0)}m)`);
+      } else {
+        console.log(`  ${idx + 1}. Route ${seg.route?.shortName}: ${seg.fromStop.name} → ${seg.toStop.name} (${seg.stops.length} stops)`);
+      }
+    });
   }
 
   return bestJourney;
