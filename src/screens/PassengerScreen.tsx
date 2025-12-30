@@ -3,17 +3,16 @@ import { motion } from 'framer-motion';
 import MatatuMap from '@/components/Map/MatatuMap';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { transitManager, Stop, Route, JourneyPlan } from '@/services/TransitManager';
-import { searchStops, loadStops, findOptimalRoute, Journey } from '@/services/StopsRoutesLoader';
+import { searchStops, loadStops, findOptimalRoute, Journey, Stop, JourneySegment } from '@/services/StopsRoutesLoader';
 import { 
   ArrowLeft, 
   MapPin,
   Clock,
-  Navigation,
   Bell,
   CheckCircle2,
   Search,
-  ArrowRight
+  ArrowRight,
+  Footprints
 } from 'lucide-react';
 
 interface PassengerScreenProps {
@@ -121,11 +120,17 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         const nextStop = journeyStops[nextIdx];
         setUserPosition({ lat: nextStop.lat, lng: nextStop.lon });
         
-        // Check for transfer point - when we reach a segment's end stop
-        if (journey?.segments && journey.segments.length > 1) {
-          for (let i = 0; i < journey.segments.length - 1; i++) {
-            if (journey.segments[i].toStop.id === nextStop.id) {
-              console.log(`🔄 Transfer at ${nextStop.name} - Change matatu to Route ${journey.segments[i + 1].route.shortName}`);
+        // Check for transfer point
+        if (journey?.segments) {
+          for (let i = 0; i < journey.segments.length; i++) {
+            const seg = journey.segments[i];
+            if (seg.toStop.id === nextStop.id && i < journey.segments.length - 1) {
+              const nextSeg = journey.segments[i + 1];
+              if (nextSeg.isWalking) {
+                console.log(`🚶 Walking from ${nextStop.name} to ${nextSeg.toStop.name} (~${Math.round(nextSeg.walkingDistance || 0)}m)`);
+              } else {
+                console.log(`🔄 Transfer at ${nextStop.name} - Change to Route ${nextSeg.route?.shortName}`);
+              }
               break;
             }
           }
@@ -145,6 +150,27 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     setJourneyStops([]);
     setArrivedAtDestination(false);
     setSearchQuery('');
+  };
+
+  // Helper to get the segment a stop belongs to
+  const getStopSegmentInfo = (stop: Stop, journey: Journey | null): { segment: JourneySegment | null; isTransfer: boolean; isWalkStart: boolean } => {
+    if (!journey) return { segment: null, isTransfer: false, isWalkStart: false };
+    
+    for (let i = 0; i < journey.segments.length; i++) {
+      const seg = journey.segments[i];
+      const isLastSegment = i === journey.segments.length - 1;
+      
+      if (seg.toStop.id === stop.id && !isLastSegment) {
+        const nextSeg = journey.segments[i + 1];
+        return { 
+          segment: seg, 
+          isTransfer: !nextSeg.isWalking, 
+          isWalkStart: !!nextSeg.isWalking 
+        };
+      }
+    }
+    
+    return { segment: null, isTransfer: false, isWalkStart: false };
   };
 
   return (
@@ -253,14 +279,28 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
       {/* Journey plan */}
       {journey && !isOnBoard && (
         <div className="bg-primary/10 px-4 py-3 border-b border-border">
-          <p className="text-xs text-muted-foreground mb-1">
-            {journey.segments.length === 1 ? 'Direct Route' : `${journey.segments.length} Transfer(s)`}
+          <p className="text-xs text-muted-foreground mb-2">
+            {journey.segments.filter(s => !s.isWalking).length === 1 
+              ? 'Direct Route' 
+              : `${journey.segments.filter(s => !s.isWalking).length} Matatu(s)`}
+            {journey.segments.some(s => s.isWalking) && ' + Walking Transfer'}
           </p>
           {journey.segments.map((seg, idx) => (
-            <p key={idx} className="text-sm flex items-center gap-2">
-              <ArrowRight className="w-3 h-3 text-primary" />
-              Route {seg.route.shortName}: {seg.fromStop.name} → {seg.toStop.name}
-            </p>
+            <div key={idx} className="text-sm flex items-center gap-2 mb-1">
+              {seg.isWalking ? (
+                <>
+                  <Footprints className="w-3 h-3 text-orange-400" />
+                  <span className="text-orange-400">
+                    Walk from {seg.fromStop.name} to {seg.toStop.name} (~{Math.round(seg.walkingDistance || 0)}m)
+                  </span>
+                </>
+              ) : (
+                <>
+                  <ArrowRight className="w-3 h-3 text-primary" />
+                  <span>Route {seg.route?.shortName}: {seg.fromStop.name} → {seg.toStop.name}</span>
+                </>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -270,7 +310,10 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         <MatatuMap 
           mode="passenger" 
           journeyStops={journeyStops}
-          journeySegments={journey?.segments.map(seg => ({ stops: seg.stops }))}
+          journeySegments={journey?.segments.map(seg => ({ 
+            stops: seg.stops,
+            isWalking: seg.isWalking 
+          }))}
           userPosition={userPosition}
           destinationStop={destination}
         />
@@ -282,19 +325,19 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
           <h3 className="font-display text-lg mb-3 flex items-center gap-2">
             <MapPin className="w-4 h-4 text-primary" />
             Journey Progress
-            {journey && journey.segments.length > 1 && (
+            {journey && journey.segments.filter(s => !s.isWalking).length > 1 && (
               <span className="text-xs bg-orange-500/20 text-orange-400 px-2 py-1 rounded-full">
-                {journey.segments.length} Transfer(s)
+                {journey.segments.filter(s => !s.isWalking).length - 1} Transfer(s)
               </span>
             )}
           </h3>
           <div className="space-y-2">
             {journeyStops.map((stop, index) => {
-              const isTransferPoint = journey?.segments.some(seg => seg.toStop.id === stop.id && seg !== journey.segments[journey.segments.length - 1]);
+              const { isTransfer, isWalkStart } = getStopSegmentInfo(stop, journey);
               
               return (
                 <div
-                  key={stop.id}
+                  key={`${stop.id}-${index}`}
                   className={`p-3 rounded-lg border transition-all ${
                     index === currentStopIndex 
                       ? 'bg-primary/20 border-primary' 
@@ -304,7 +347,9 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
                   } ${
                     stop.id === destination?.id ? 'ring-2 ring-matatu-yellow' : ''
                   } ${
-                    isTransferPoint ? 'ring-2 ring-orange-400' : ''
+                    isTransfer ? 'ring-2 ring-orange-400' : ''
+                  } ${
+                    isWalkStart ? 'ring-2 ring-blue-400' : ''
                   }`}
                 >
                   <div className="flex items-center gap-3">
@@ -316,9 +361,14 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
                       <span className={index === currentStopIndex ? 'text-primary font-medium' : ''}>
                         {stop.name}
                       </span>
-                      {isTransferPoint && (
+                      {isTransfer && (
                         <div className="text-xs text-orange-400 mt-1">
                           🔄 Transfer Point - Change Matatu
+                        </div>
+                      )}
+                      {isWalkStart && (
+                        <div className="text-xs text-blue-400 mt-1">
+                          🚶 Walking Transfer Required
                         </div>
                       )}
                     </div>
