@@ -167,20 +167,6 @@ function stopMatches(routeStop: Stop, userStop: Stop): boolean {
   if (routeNameLower === userNameLower) return true;
   if (routeNameLower.includes(userNameLower) || userNameLower.includes(routeNameLower)) return true;
   
-  // Word-based matching for compound names
-  const userWords = userNameLower.split(/[\s-]+/).filter(w => w.length > 2);
-  const routeWords = routeNameLower.split(/[\s-]+/).filter(w => w.length > 2);
-  
-  for (const userWord of userWords) {
-    for (const routeWord of routeWords) {
-      if (userWord === routeWord) return true;
-    }
-  }
-  
-  // Geographic proximity check (within 300m)
-  const distance = haversineDistance(routeStop.lat, routeStop.lon, userStop.lat, userStop.lon);
-  if (distance < 300) return true;
-  
   return false;
 }
 
@@ -338,8 +324,11 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
           
           // Score: total stops + transfer penalty + walking distance penalty
           const walkPenalty = (zoneMatch.walkDistance || 0) / 200; // 200m = 1 stop equivalent
-          const score = fromSegmentStops.length + toSegmentStops.length + 2 + walkPenalty;
-          
+          let score = fromSegmentStops.length + toSegmentStops.length + 2 + walkPenalty;
+
+          // Bonus for CBD zone transfers
+          if (zoneMatch.inSameZone) score -= 5;
+
           console.log(`Transfer route: ${fromRoute.shortName} → ${toRoute.shortName} via ${fromHub.name}↔${toHub.name} (${zoneMatch.zoneName}, ${Math.round(zoneMatch.walkDistance || 0)}m walk) - Score: ${score.toFixed(1)}`);
           
           if (score < bestScore) {
@@ -410,8 +399,11 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
           if (segment1Stops.length === 0 || segment2Stops.length === 0) continue;
           
           const walkPenalty = zoneMatch.inSameZone ? (zoneMatch.walkDistance || 0) / 200 : 0;
-          const score = segment1Stops.length + segment2Stops.length + 2 + walkPenalty;
-          
+          let score = segment1Stops.length + segment2Stops.length + 2 + walkPenalty;
+
+          // Bonus for zone-based transfers
+          if (zoneMatch.inSameZone) score -= 5;
+
           if (score < bestScore) {
             bestScore = score;
             

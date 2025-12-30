@@ -2,7 +2,7 @@ import React, { useCallback, useState, useEffect } from 'react';
 import { GoogleMap, useLoadScript, Marker, Polyline, InfoWindow } from '@react-google-maps/api';
 import { Route, Stop } from '@/services/TransitManager';
 
-const GOOGLE_MAPS_API_KEY = 'AIzaSyDsDs-lucVY7kY4bAMoTjkMiEAD4fA492E';
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
 interface JourneySegmentDisplay {
   stops: Stop[];
