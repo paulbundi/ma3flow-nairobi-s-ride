@@ -50,7 +50,7 @@ const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
           animate={{ rotate: [0, 5, -5, 0] }}
           transition={{ duration: 4, repeat: Infinity }}
         >
-          <span className="text-4xl">🚐</span>
+          <img src="/ma3.png" alt="MA3" className="w-full h-full object-contain" />
         </motion.div>
         <h1 className="font-display text-6xl md:text-7xl text-glow tracking-tight">
           MA<span className="text-matatu-yellow">3</span>FLOW
@@ -129,14 +129,14 @@ const ModeSelector: React.FC<ModeSelectorProps> = ({ onSelectMode }) => {
       </motion.div>
 
       {/* Footer */}
-      <motion.p
+      {/* <motion.p
         className="mt-12 text-muted-foreground text-sm z-10"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5 }}
       >
         Simulating Thika Road & Westlands Routes
-      </motion.p>
+      </motion.p> */}
     </div>
   );
 };

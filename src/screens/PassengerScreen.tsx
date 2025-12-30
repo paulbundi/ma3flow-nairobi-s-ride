@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import MatatuMap from '@/components/Map/MatatuMap';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { searchStops, loadStops, findOptimalRoute, Journey, Stop, JourneySegment } from '@/services/StopsRoutesLoader';
+import { searchStops, loadStops, findOptimalRoute, Journey, Stop, JourneySegment } from '@/services/StopsRoutesLoaderFixed';
 import { 
   ArrowLeft, 
   MapPin,
@@ -33,7 +33,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
   const [arrivedAtDestination, setArrivedAtDestination] = useState(false);
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null);
 
-  // Initialize with stops from CSV
   useEffect(() => {
     const initializePassenger = async () => {
       const stops = await loadStops();
@@ -46,7 +45,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     initializePassenger();
   }, []);
 
-  // Search for from location
   const handleFromSearch = useCallback(async (query: string) => {
     setFromSearchQuery(query);
     if (query.length >= 2) {
@@ -57,7 +55,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     }
   }, [destination]);
 
-  // Select from location
   const handleSelectFrom = useCallback((stop: Stop) => {
     setCurrentLocation(stop);
     setFromSearchQuery(stop.name);
@@ -65,7 +62,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     setUserPosition({ lat: stop.lat, lng: stop.lon });
   }, []);
 
-  // Search for destinations
   const handleSearch = useCallback(async (query: string) => {
     setSearchQuery(query);
     if (query.length >= 2) {
@@ -76,7 +72,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     }
   }, [currentLocation, destination]);
 
-  // Select destination and find route
   const handleSelectDestination = useCallback(async (stop: Stop) => {
     setDestination(stop);
     setSearchQuery(stop.name);
@@ -94,7 +89,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     }
   }, [currentLocation]);
 
-  // Start journey simulation
   const handleBoard = useCallback(() => {
     if (journeyStops.length === 0) return;
     
@@ -103,7 +97,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     setUserPosition({ lat: journeyStops[0].lat, lng: journeyStops[0].lon });
   }, [journeyStops]);
 
-  // Animate journey with matatu transfers
   useEffect(() => {
     if (!isOnBoard || journeyStops.length === 0) return;
 
@@ -120,7 +113,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         const nextStop = journeyStops[nextIdx];
         setUserPosition({ lat: nextStop.lat, lng: nextStop.lon });
         
-        // Check for transfer point
         if (journey?.segments) {
           for (let i = 0; i < journey.segments.length; i++) {
             const seg = journey.segments[i];
@@ -128,8 +120,8 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
               const nextSeg = journey.segments[i + 1];
               if (nextSeg.isWalking) {
                 console.log(`🚶 Walking from ${nextStop.name} to ${nextSeg.toStop.name} (~${Math.round(nextSeg.walkingDistance || 0)}m)`);
-              } else {
-                console.log(`🔄 Transfer at ${nextStop.name} - Change to Route ${nextSeg.route?.shortName}`);
+              } else if (nextSeg.route) {
+                console.log(`🔄 Transfer at ${nextStop.name} - Change to Route ${nextSeg.route.shortName}`);
               }
               break;
             }
@@ -152,7 +144,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
     setSearchQuery('');
   };
 
-  // Helper to get the segment a stop belongs to
   const getStopSegmentInfo = (stop: Stop, journey: Journey | null): { segment: JourneySegment | null; isTransfer: boolean; isWalkStart: boolean } => {
     if (!journey) return { segment: null, isTransfer: false, isWalkStart: false };
     
@@ -175,7 +166,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
       <header className="bg-card border-b border-border px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={onBack}>
@@ -194,7 +184,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         )}
       </header>
 
-      {/* Search section */}
       <div className="bg-card/50 px-4 py-3 border-b border-border space-y-2">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -259,7 +248,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         </div>
       </div>
 
-      {/* Arrived notification */}
       {arrivedAtDestination && (
         <motion.div
           className="bg-matatu-green/20 border-b border-matatu-green/30 px-4 py-3"
@@ -276,7 +264,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         </motion.div>
       )}
 
-      {/* Journey plan */}
       {journey && !isOnBoard && (
         <div className="bg-primary/10 px-4 py-3 border-b border-border">
           <p className="text-xs text-muted-foreground mb-2">
@@ -305,22 +292,16 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         </div>
       )}
 
-      {/* Map */}
       <div className="h-64 relative">
         <MatatuMap 
           mode="passenger" 
-          journeyStops={journeyStops}
-          journeySegments={journey?.segments.map(seg => ({ 
-            stops: seg.stops,
-            isWalking: seg.isWalking,
-            walkingDistance: seg.walkingDistance
-          }))}
+          journeyStops={journey?.totalStops || journeyStops}
+          journeySegments={journey?.segments}
           userPosition={userPosition}
           destinationStop={destination}
         />
       </div>
 
-      {/* Journey progress with transfer indicators */}
       {isOnBoard && journeyStops.length > 0 && (
         <div className="flex-1 overflow-auto px-4 py-4">
           <h3 className="font-display text-lg mb-3 flex items-center gap-2">
@@ -382,7 +363,6 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         </div>
       )}
 
-      {/* Controls */}
       <div className="bg-card border-t border-border px-4 py-4 mt-auto">
         {!isOnBoard ? (
           <Button
