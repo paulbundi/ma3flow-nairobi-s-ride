@@ -312,7 +312,8 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
           journeyStops={journeyStops}
           journeySegments={journey?.segments.map(seg => ({ 
             stops: seg.stops,
-            isWalking: seg.isWalking 
+            isWalking: seg.isWalking,
+            walkingDistance: seg.walkingDistance
           }))}
           userPosition={userPosition}
           destinationStop={destination}

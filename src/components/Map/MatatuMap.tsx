@@ -1,8 +1,14 @@
 import React, { useCallback, useState, useEffect } from 'react';
-import { GoogleMap, useLoadScript, Marker, Polyline } from '@react-google-maps/api';
+import { GoogleMap, useLoadScript, Marker, Polyline, InfoWindow } from '@react-google-maps/api';
 import { Route, Stop } from '@/services/TransitManager';
 
 const GOOGLE_MAPS_API_KEY = 'AIzaSyDsDs-lucVY7kY4bAMoTjkMiEAD4fA492E';
+
+interface JourneySegmentDisplay {
+  stops: Stop[];
+  isWalking?: boolean;
+  walkingDistance?: number;
+}
 
 interface MatatuMapProps {
   mode: 'driver' | 'passenger';
@@ -10,7 +16,7 @@ interface MatatuMapProps {
   currentPosition?: { lat: number; lng: number };
   currentStopIndex?: number;
   journeyStops?: Stop[];
-  journeySegments?: Array<{ stops: Stop[] }>;
+  journeySegments?: JourneySegmentDisplay[];
   userPosition?: { lat: number; lng: number } | null;
   destinationStop?: Stop | null;
   onStopReached?: (stop: Stop) => void;
@@ -159,13 +165,40 @@ const MatatuMap: React.FC<MatatuMapProps> = ({
           />
         )}
 
-        {/* Passenger mode: Journey segments */}
+        {/* Passenger mode: Journey segments with walking paths */}
         {mode === 'passenger' && journeySegments?.map((segment, idx) => {
           const segmentPath = segment.stops.map(stop => ({
             lat: stop.lat,
             lng: stop.lon,
           }));
-          const colors = ['#3b82f6', '#f59e0b', '#ec4899', '#8b5cf6'];
+          
+          // Walking segments use dotted orange line
+          if (segment.isWalking) {
+            return (
+              <Polyline
+                key={`walking-${idx}`}
+                path={segmentPath}
+                options={{
+                  strokeColor: '#f97316',
+                  strokeOpacity: 0,
+                  strokeWeight: 4,
+                  icons: [{
+                    icon: {
+                      path: 'M 0,-1 0,1',
+                      strokeOpacity: 1,
+                      strokeColor: '#f97316',
+                      scale: 3,
+                    },
+                    offset: '0',
+                    repeat: '15px',
+                  }],
+                }}
+              />
+            );
+          }
+          
+          // Matatu segments use solid colored lines
+          const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4'];
           return (
             <Polyline
               key={`segment-${idx}`}
@@ -176,6 +209,26 @@ const MatatuMap: React.FC<MatatuMapProps> = ({
                 strokeWeight: 5,
               }}
             />
+          );
+        })}
+
+        {/* Walking distance labels */}
+        {mode === 'passenger' && journeySegments?.filter(s => s.isWalking).map((segment, idx) => {
+          const midLat = (segment.stops[0].lat + segment.stops[1].lat) / 2;
+          const midLng = (segment.stops[0].lon + segment.stops[1].lon) / 2;
+          return (
+            <InfoWindow
+              key={`walk-label-${idx}`}
+              position={{ lat: midLat, lng: midLng }}
+              options={{
+                disableAutoPan: true,
+                pixelOffset: new window.google.maps.Size(0, -10),
+              }}
+            >
+              <div className="bg-orange-500 text-white px-2 py-1 rounded text-xs font-medium whitespace-nowrap">
+                🚶 {Math.round(segment.walkingDistance || 0)}m walk
+              </div>
+            </InfoWindow>
           );
         })}
 

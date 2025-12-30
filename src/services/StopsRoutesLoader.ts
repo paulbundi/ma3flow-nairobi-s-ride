@@ -289,7 +289,7 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
     }
   }
 
-  // === Strategy 2: CBD Zone-based transfers ===
+  // === Strategy 2: CBD Zone-based transfers (supports bidirectional routes) ===
   for (const fromRoute of fromRoutes) {
     const fromStopInRoute = fromRoute.stops.find(s => stopMatches(s, fromStop));
     if (!fromStopInRoute) continue;
@@ -314,22 +314,31 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
       // Check for zone-based transfer opportunities
       for (const fromHub of fromRouteHubs) {
         const fromHubIdx = fromRoute.stops.indexOf(fromHub);
-        if (fromHubIdx <= fromIdx) continue; // Must be after boarding point
+        
+        // Route 1 can go in either direction to the hub
+        const fromSegmentStops = fromHubIdx > fromIdx 
+          ? fromRoute.stops.slice(fromIdx, fromHubIdx + 1)
+          : fromRoute.stops.slice(fromHubIdx, fromIdx + 1).reverse();
+        
+        if (fromSegmentStops.length === 0) continue;
         
         for (const toHub of toRouteHubs) {
           const toHubIdx = toRoute.stops.indexOf(toHub);
-          if (toHubIdx >= toIdx) continue; // Must be before alighting point
+          
+          // Route 2 can go in either direction from the hub
+          const toSegmentStops = toIdx > toHubIdx
+            ? toRoute.stops.slice(toHubIdx, toIdx + 1)
+            : toRoute.stops.slice(toIdx, toHubIdx + 1).reverse();
+          
+          if (toSegmentStops.length === 0) continue;
           
           // Check if these hubs are in the same CBD zone
           const zoneMatch = areStopsInSameCBDZone(fromHub, toHub);
           if (!zoneMatch.inSameZone) continue;
           
-          const segment1 = fromRoute.stops.slice(fromIdx, fromHubIdx + 1);
-          const segment2 = toRoute.stops.slice(toHubIdx, toIdx + 1);
-          
           // Score: total stops + transfer penalty + walking distance penalty
           const walkPenalty = (zoneMatch.walkDistance || 0) / 200; // 200m = 1 stop equivalent
-          const score = segment1.length + segment2.length + 2 + walkPenalty;
+          const score = fromSegmentStops.length + toSegmentStops.length + 2 + walkPenalty;
           
           console.log(`Transfer route: ${fromRoute.shortName} → ${toRoute.shortName} via ${fromHub.name}↔${toHub.name} (${zoneMatch.zoneName}, ${Math.round(zoneMatch.walkDistance || 0)}m walk) - Score: ${score.toFixed(1)}`);
           
@@ -341,7 +350,7 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
                 route: fromRoute,
                 fromStop,
                 toStop: fromHub,
-                stops: segment1
+                stops: fromSegmentStops
               }
             ];
             
@@ -361,22 +370,26 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
               route: toRoute,
               fromStop: toHub,
               toStop,
-              stops: segment2
+              stops: toSegmentStops
             });
             
             bestJourney = {
               segments,
-              totalStops: [...segment1, ...segment2.slice(1)]
+              totalStops: [...fromSegmentStops, ...toSegmentStops.slice(1)]
             };
           }
         }
       }
       
-      // === Strategy 3: Any overlapping stop transfer ===
-      for (let i = fromIdx + 1; i < fromRoute.stops.length; i++) {
+      // === Strategy 3: Any overlapping stop transfer (bidirectional) ===
+      for (let i = 0; i < fromRoute.stops.length; i++) {
+        if (i === fromIdx) continue; // Skip the boarding stop
+        
         const intermediateStop = fromRoute.stops[i];
         
-        for (let j = 0; j < toIdx; j++) {
+        for (let j = 0; j < toRoute.stops.length; j++) {
+          if (j === toIdx) continue; // Skip the alighting stop
+          
           const toRouteStop = toRoute.stops[j];
           
           // Check direct match or zone match
@@ -385,11 +398,19 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
           
           if (!directMatch && !zoneMatch.inSameZone) continue;
           
-          const segment1 = fromRoute.stops.slice(fromIdx, i + 1);
-          const segment2 = toRoute.stops.slice(j, toIdx + 1);
+          // Build segments in correct direction
+          const segment1Stops = i > fromIdx
+            ? fromRoute.stops.slice(fromIdx, i + 1)
+            : fromRoute.stops.slice(i, fromIdx + 1).reverse();
+          
+          const segment2Stops = toIdx > j
+            ? toRoute.stops.slice(j, toIdx + 1)
+            : toRoute.stops.slice(toIdx, j + 1).reverse();
+          
+          if (segment1Stops.length === 0 || segment2Stops.length === 0) continue;
           
           const walkPenalty = zoneMatch.inSameZone ? (zoneMatch.walkDistance || 0) / 200 : 0;
-          const score = segment1.length + segment2.length + 2 + walkPenalty;
+          const score = segment1Stops.length + segment2Stops.length + 2 + walkPenalty;
           
           if (score < bestScore) {
             bestScore = score;
@@ -399,7 +420,7 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
                 route: fromRoute,
                 fromStop,
                 toStop: intermediateStop,
-                stops: segment1
+                stops: segment1Stops
               }
             ];
             
@@ -419,12 +440,12 @@ export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Jo
               route: toRoute,
               fromStop: directMatch ? intermediateStop : toRouteStop,
               toStop,
-              stops: segment2
+              stops: segment2Stops
             });
             
             bestJourney = {
               segments,
-              totalStops: [...segment1, ...segment2.slice(1)]
+              totalStops: [...segment1Stops, ...segment2Stops.slice(1)]
             };
           }
         }
