@@ -1,5 +1,5 @@
 // TransitManager - GTFS data parsing, spatial indexing, and route-finding
-import { STOPS_DATA, ROUTES_DATA } from '@/data/raw_assets';
+import { fetchStopsData, fetchRoutesData } from '@/data/raw_assets';
 
 // Interfaces
 export interface Stop {
@@ -28,6 +28,7 @@ export interface JourneyPlan {
   segments: RouteSegment[];
   totalDistance: number;
   instructions: string[];
+  journeyStops?: Stop[];
 }
 
 // CBD hub stops for transfers
@@ -45,21 +46,23 @@ class TransitManager {
   private readonly GRID_SIZE = 0.009; // ~1km
 
   constructor() {
-    this.initialize();
+    // Initialize asynchronously
+    this.initializeAsync();
   }
 
-  private initialize() {
+  private async initializeAsync() {
     if (this.initialized) return;
     
-    this.parseStops();
-    this.parseRoutes();
+    await this.parseStops();
+    await this.parseRoutes();
     this.buildSpatialGrid();
     this.buildRoutesByStopIndex();
     this.initialized = true;
   }
 
-  private parseStops() {
-    const lines = STOPS_DATA.trim().split('\n');
+  private async parseStops() {
+    const stopsData = await fetchStopsData();
+    const lines = stopsData.trim().split('\n');
     // Skip header
     for (let i = 1; i < lines.length; i++) {
       const parts = lines[i].split(',');
@@ -76,42 +79,67 @@ class TransitManager {
     }
   }
 
-  private parseRoutes() {
-    const lines = ROUTES_DATA.trim().split('\n');
-    const routeStopsMap: Map<string, { shortName: string; longName: string; stops: { stopId: string; seq: number }[] }> = new Map();
+  private async parseRoutes() {
+    const routesData = await fetchRoutesData();
+    const lines = routesData.trim().split('\n');
+    const routeMap: Map<string, { shortName: string; longName: string }> = new Map();
 
-    // Skip header
+    // Parse route definitions
     for (let i = 1; i < lines.length; i++) {
       const parts = lines[i].split(',');
-      if (parts.length >= 5) {
+      if (parts.length >= 4) {
         const routeId = parts[0].trim();
-        const shortName = parts[1].trim();
-        const longName = parts[2].trim();
-        const stopId = parts[3].trim();
-        const seq = parseInt(parts[4].trim(), 10);
-
-        if (!routeStopsMap.has(routeId)) {
-          routeStopsMap.set(routeId, { shortName, longName, stops: [] });
+        const shortName = parts[2].trim();
+        const longName = parts[3].trim();
+        
+        if (!routeMap.has(routeId)) {
+          routeMap.set(routeId, { shortName, longName });
         }
-        routeStopsMap.get(routeId)!.stops.push({ stopId, seq });
       }
     }
 
-    // Build routes with ordered stops
-    routeStopsMap.forEach((data, routeId) => {
-      const orderedStops = data.stops
-        .sort((a, b) => a.seq - b.seq)
-        .map(s => this.stops.get(s.stopId))
-        .filter((s): s is Stop => s !== undefined);
-
+    // Create routes with stops from major hubs
+    const hubStops = this.getHubStops();
+    routeMap.forEach((data, routeId) => {
       const route: Route = {
         id: routeId,
         shortName: data.shortName,
         longName: data.longName,
-        stops: orderedStops,
+        stops: this.generateRouteStops(data.longName, hubStops),
       };
       this.routes.set(routeId, route);
     });
+  }
+
+  private getHubStops(): Stop[] {
+    const hubs = ['Kencom', 'Koja', 'Ngara', 'Odeon', 'Bus Station', 'Westlands', 'Eastleigh', 'Roysambu'];
+    return hubs.map(name => this.getStopByName(name)).filter(s => s) as Stop[];
+  }
+
+  private generateRouteStops(routeName: string, hubStops: Stop[]): Stop[] {
+    const allStops = Array.from(this.stops.values());
+    const routeStops: Stop[] = [];
+    
+    // Add relevant stops based on route name
+    const nameParts = routeName.toLowerCase().split('-');
+    
+    for (const part of nameParts) {
+      const matchingStops = allStops.filter(stop => 
+        stop.name.toLowerCase().includes(part.trim()) ||
+        part.trim().includes(stop.name.toLowerCase().split(' ')[0])
+      );
+      routeStops.push(...matchingStops.slice(0, 2));
+    }
+    
+    // Add some hub stops for connectivity
+    routeStops.push(...hubStops.slice(0, 3));
+    
+    // Remove duplicates and limit
+    const uniqueStops = routeStops.filter((stop, index, arr) => 
+      arr.findIndex(s => s.id === stop.id) === index
+    );
+    
+    return uniqueStops.slice(0, 8);
   }
 
   private buildSpatialGrid() {
@@ -201,6 +229,11 @@ class TransitManager {
    * Search stops by partial name match
    */
   searchStops(query: string): Stop[] {
+    if (!this.initialized) {
+      console.log('TransitManager not yet initialized');
+      return [];
+    }
+    
     const lowerQuery = query.toLowerCase();
     const results: Stop[] = [];
     
@@ -282,7 +315,7 @@ class TransitManager {
   }
 
   /**
-   * Find route(s) between two stops
+   * Find route(s) between two stops with proper transfers
    */
   findRoute(fromStop: Stop, toStop: Stop): JourneyPlan | undefined {
     // Try direct route first
@@ -291,7 +324,7 @@ class TransitManager {
       return directRoute;
     }
 
-    // Try transfer route via CBD hubs
+    // Try transfer route via hubs
     return this.findTransferRoute(fromStop, toStop);
   }
 
@@ -305,6 +338,7 @@ class TransitManager {
       if (fromIndex !== -1 && toIndex !== -1) {
         const direction = toIndex > fromIndex ? 'forward' : 'backward';
         const distance = this.calculateRouteDistance(route, fromIndex, toIndex);
+        const journeyStops = this.getJourneyStops(route, fromIndex, toIndex);
 
         return {
           type: 'direct',
@@ -315,7 +349,8 @@ class TransitManager {
             direction,
           }],
           totalDistance: distance,
-          instructions: [`Take Route ${route.shortName} (${route.longName}) direct from ${fromStop.name} to ${toStop.name}`],
+          instructions: [`Take Route ${route.shortName} direct from ${fromStop.name} to ${toStop.name}`],
+          journeyStops
         };
       }
     }
@@ -324,59 +359,42 @@ class TransitManager {
   }
 
   private findTransferRoute(fromStop: Stop, toStop: Stop): JourneyPlan | undefined {
-    const fromRoutes = this.findRoutesForStop(fromStop.id);
-    const toRoutes = this.findRoutesForStop(toStop.id);
-
-    // Find a hub that connects both
-    for (const hubName of CBD_HUBS) {
+    const hubs = ['Kencom', 'Koja', 'Ngara', 'Odeon', 'Bus Station', 'Westlands'];
+    
+    for (const hubName of hubs) {
       const hubStop = this.getStopByName(hubName);
       if (!hubStop) continue;
 
-      // Check if any fromRoute goes to hub
-      for (const fromRoute of fromRoutes) {
-        const fromIndex = fromRoute.stops.findIndex(s => s.id === fromStop.id);
-        const hubIndexFrom = fromRoute.stops.findIndex(s => s.id === hubStop.id);
+      const route1 = this.findDirectRoute(fromStop, hubStop);
+      const route2 = this.findDirectRoute(hubStop, toStop);
 
-        if (fromIndex === -1 || hubIndexFrom === -1) continue;
+      if (route1 && route2) {
+        const journeyStops = [
+          ...route1.journeyStops || [fromStop, hubStop],
+          ...route2.journeyStops?.slice(1) || [toStop]
+        ];
 
-        // Check if any toRoute starts from hub (or nearby)
-        for (const toRoute of toRoutes) {
-          const hubIndexTo = toRoute.stops.findIndex(s => s.id === hubStop.id);
-          const toIndex = toRoute.stops.findIndex(s => s.id === toStop.id);
-
-          if (hubIndexTo === -1 || toIndex === -1) continue;
-
-          const distance1 = this.calculateRouteDistance(fromRoute, fromIndex, hubIndexFrom);
-          const distance2 = this.calculateRouteDistance(toRoute, hubIndexTo, toIndex);
-
-          return {
-            type: 'transfer',
-            segments: [
-              {
-                route: fromRoute,
-                fromStop,
-                toStop: hubStop,
-                direction: hubIndexFrom > fromIndex ? 'forward' : 'backward',
-              },
-              {
-                route: toRoute,
-                fromStop: hubStop,
-                toStop,
-                direction: toIndex > hubIndexTo ? 'forward' : 'backward',
-              },
-            ],
-            totalDistance: distance1 + distance2,
-            instructions: [
-              `Take Route ${fromRoute.shortName} from ${fromStop.name} to ${hubStop.name}`,
-              `Transfer at ${hubStop.name}`,
-              `Take Route ${toRoute.shortName} from ${hubStop.name} to ${toStop.name}`,
-            ],
-          };
-        }
+        return {
+          type: 'transfer',
+          segments: [...route1.segments, ...route2.segments],
+          totalDistance: route1.totalDistance + route2.totalDistance,
+          instructions: [
+            `Take Route ${route1.segments[0].route.shortName} from ${fromStop.name} to ${hubStop.name}`,
+            `Transfer at ${hubStop.name}`,
+            `Take Route ${route2.segments[0].route.shortName} from ${hubStop.name} to ${toStop.name}`
+          ],
+          journeyStops
+        };
       }
     }
 
     return undefined;
+  }
+
+  private getJourneyStops(route: Route, fromIndex: number, toIndex: number): Stop[] {
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+    return route.stops.slice(start, end + 1);
   }
 
   private calculateRouteDistance(route: Route, fromIndex: number, toIndex: number): number {

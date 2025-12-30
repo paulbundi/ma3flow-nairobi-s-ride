@@ -10,6 +10,7 @@ interface MatatuMapProps {
   currentPosition?: { lat: number; lng: number };
   currentStopIndex?: number;
   journeyStops?: Stop[];
+  journeySegments?: Array<{ stops: Stop[] }>;
   userPosition?: { lat: number; lng: number } | null;
   destinationStop?: Stop | null;
   onStopReached?: (stop: Stop) => void;
@@ -68,6 +69,7 @@ const MatatuMap: React.FC<MatatuMapProps> = ({
   currentPosition,
   currentStopIndex = 0,
   journeyStops,
+  journeySegments,
   userPosition,
   destinationStop,
   onStopReached
@@ -157,17 +159,25 @@ const MatatuMap: React.FC<MatatuMapProps> = ({
           />
         )}
 
-        {/* Passenger mode: Journey line */}
-        {mode === 'passenger' && journeyPath.length > 0 && (
-          <Polyline
-            path={journeyPath}
-            options={{
-              strokeColor: '#3b82f6',
-              strokeOpacity: 0.9,
-              strokeWeight: 5,
-            }}
-          />
-        )}
+        {/* Passenger mode: Journey segments */}
+        {mode === 'passenger' && journeySegments?.map((segment, idx) => {
+          const segmentPath = segment.stops.map(stop => ({
+            lat: stop.lat,
+            lng: stop.lon,
+          }));
+          const colors = ['#3b82f6', '#f59e0b', '#ec4899', '#8b5cf6'];
+          return (
+            <Polyline
+              key={`segment-${idx}`}
+              path={segmentPath}
+              options={{
+                strokeColor: colors[idx % colors.length],
+                strokeOpacity: 0.9,
+                strokeWeight: 5,
+              }}
+            />
+          );
+        })}
 
         {/* Route stops (driver mode - only active route) */}
         {mode === 'driver' && activeRoute?.stops.map((stop, index) => (

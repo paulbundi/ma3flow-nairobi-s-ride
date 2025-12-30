@@ -4,6 +4,7 @@ import MatatuMap from '@/components/Map/MatatuMap';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { transitManager, Stop, Route, JourneyPlan } from '@/services/TransitManager';
+import { searchStops, loadStops, findOptimalRoute, Journey } from '@/services/StopsRoutesLoader';
 import { 
   ArrowLeft, 
   MapPin,
@@ -23,76 +24,87 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
   const [currentLocation, setCurrentLocation] = useState<Stop | null>(null);
   const [destination, setDestination] = useState<Stop | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [fromSearchQuery, setFromSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Stop[]>([]);
-  const [journeyPlan, setJourneyPlan] = useState<JourneyPlan | null>(null);
+  const [fromSearchResults, setFromSearchResults] = useState<Stop[]>([]);
+  const [journey, setJourney] = useState<Journey | null>(null);
   const [isOnBoard, setIsOnBoard] = useState(false);
   const [journeyStops, setJourneyStops] = useState<Stop[]>([]);
   const [currentStopIndex, setCurrentStopIndex] = useState(0);
   const [arrivedAtDestination, setArrivedAtDestination] = useState(false);
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null);
 
-  // Initialize with simulated GPS location (Kencom)
+  // Initialize with stops from CSV
   useEffect(() => {
-    const nearbyStops = transitManager.getNearbyStops(-1.2864, 36.8172, 500);
-    if (nearbyStops.length > 0) {
-      setCurrentLocation(nearbyStops[0]);
-      setUserPosition({ lat: nearbyStops[0].lat, lng: nearbyStops[0].lon });
+    const initializePassenger = async () => {
+      const stops = await loadStops();
+      if (stops.length > 0) {
+        setCurrentLocation(stops[0]);
+        setUserPosition({ lat: stops[0].lat, lng: stops[0].lon });
+      }
+    };
+    
+    initializePassenger();
+  }, []);
+
+  // Search for from location
+  const handleFromSearch = useCallback(async (query: string) => {
+    setFromSearchQuery(query);
+    if (query.length >= 2) {
+      const results = await searchStops(query);
+      setFromSearchResults(results.filter(s => s.id !== destination?.id));
+    } else {
+      setFromSearchResults([]);
     }
+  }, [destination]);
+
+  // Select from location
+  const handleSelectFrom = useCallback((stop: Stop) => {
+    setCurrentLocation(stop);
+    setFromSearchQuery(stop.name);
+    setFromSearchResults([]);
+    setUserPosition({ lat: stop.lat, lng: stop.lon });
   }, []);
 
   // Search for destinations
-  const handleSearch = useCallback((query: string) => {
+  const handleSearch = useCallback(async (query: string) => {
     setSearchQuery(query);
     if (query.length >= 2) {
-      const results = transitManager.searchStops(query);
-      setSearchResults(results.filter(s => s.id !== currentLocation?.id));
+      const results = await searchStops(query);
+      setSearchResults(results.filter(s => s.id !== currentLocation?.id && s.id !== destination?.id));
     } else {
       setSearchResults([]);
     }
-  }, [currentLocation]);
+  }, [currentLocation, destination]);
 
   // Select destination and find route
-  const handleSelectDestination = useCallback((stop: Stop) => {
+  const handleSelectDestination = useCallback(async (stop: Stop) => {
     setDestination(stop);
     setSearchQuery(stop.name);
     setSearchResults([]);
 
     if (currentLocation) {
-      const plan = transitManager.findRoute(currentLocation, stop);
-      setJourneyPlan(plan || null);
-
-      // Build journey stops list
-      if (plan) {
-        const stops: Stop[] = [];
-        plan.segments.forEach(segment => {
-          const fromIdx = segment.route.stops.findIndex(s => s.id === segment.fromStop.id);
-          const toIdx = segment.route.stops.findIndex(s => s.id === segment.toStop.id);
-          
-          if (fromIdx !== -1 && toIdx !== -1) {
-            const start = Math.min(fromIdx, toIdx);
-            const end = Math.max(fromIdx, toIdx);
-            for (let i = start; i <= end; i++) {
-              if (!stops.find(s => s.id === segment.route.stops[i].id)) {
-                stops.push(segment.route.stops[i]);
-              }
-            }
-          }
-        });
-        setJourneyStops(stops);
+      const optimalRoute = await findOptimalRoute(currentLocation, stop);
+      setJourney(optimalRoute);
+      
+      if (optimalRoute?.totalStops) {
+        setJourneyStops(optimalRoute.totalStops);
+      } else {
+        setJourneyStops([currentLocation, stop]);
       }
     }
   }, [currentLocation]);
 
   // Start journey simulation
   const handleBoard = useCallback(() => {
-    if (!journeyPlan || journeyStops.length === 0) return;
+    if (journeyStops.length === 0) return;
     
     setIsOnBoard(true);
     setCurrentStopIndex(0);
     setUserPosition({ lat: journeyStops[0].lat, lng: journeyStops[0].lon });
-  }, [journeyPlan, journeyStops]);
+  }, [journeyStops]);
 
-  // Animate journey
+  // Animate journey with matatu transfers
   useEffect(() => {
     if (!isOnBoard || journeyStops.length === 0) return;
 
@@ -104,19 +116,32 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
           clearInterval(interval);
           return prev;
         }
+        
         const nextIdx = prev + 1;
-        setUserPosition({ lat: journeyStops[nextIdx].lat, lng: journeyStops[nextIdx].lon });
+        const nextStop = journeyStops[nextIdx];
+        setUserPosition({ lat: nextStop.lat, lng: nextStop.lon });
+        
+        // Check for transfer point - when we reach a segment's end stop
+        if (journey?.segments && journey.segments.length > 1) {
+          for (let i = 0; i < journey.segments.length - 1; i++) {
+            if (journey.segments[i].toStop.id === nextStop.id) {
+              console.log(`🔄 Transfer at ${nextStop.name} - Change matatu to Route ${journey.segments[i + 1].route.shortName}`);
+              break;
+            }
+          }
+        }
+        
         return nextIdx;
       });
-    }, 2000);
+    }, 3000);
 
     return () => clearInterval(interval);
-  }, [isOnBoard, journeyStops]);
+  }, [isOnBoard, journeyStops, journey]);
 
   const handleAlight = () => {
     setIsOnBoard(false);
     setDestination(null);
-    setJourneyPlan(null);
+    setJourney(null);
     setJourneyStops([]);
     setArrivedAtDestination(false);
     setSearchQuery('');
@@ -145,10 +170,33 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
 
       {/* Search section */}
       <div className="bg-card/50 px-4 py-3 border-b border-border space-y-2">
-        <div className="flex items-center gap-2 text-sm">
-          <Navigation className="w-4 h-4 text-primary" />
-          <span className="text-muted-foreground">From:</span>
-          <span className="font-medium">{currentLocation?.name || 'Getting location...'}</span>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search from location..."
+            value={fromSearchQuery}
+            onChange={(e) => handleFromSearch(e.target.value)}
+            className="pl-10"
+            disabled={isOnBoard}
+          />
+          {fromSearchResults.length > 0 && (
+            <div className="absolute top-full left-0 right-0 bg-card border border-border rounded-lg mt-1 max-h-48 overflow-y-auto z-50 shadow-lg">
+              {fromSearchResults.map(stop => (
+                <button
+                  key={stop.id}
+                  className="w-full px-4 py-2 text-left hover:bg-muted transition-colors border-b border-border/50 last:border-b-0"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleSelectFrom(stop);
+                  }}
+                >
+                  <MapPin className="w-4 h-4 inline mr-2 text-muted-foreground" />
+                  {stop.name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -164,13 +212,22 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
               {searchResults.map(stop => (
                 <button
                   key={stop.id}
-                  className="w-full px-4 py-2 text-left hover:bg-muted transition-colors"
-                  onClick={() => handleSelectDestination(stop)}
+                  className="w-full px-4 py-2 text-left hover:bg-muted transition-colors border-b border-border/50 last:border-b-0"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleSelectDestination(stop);
+                  }}
                 >
                   <MapPin className="w-4 h-4 inline mr-2 text-muted-foreground" />
                   {stop.name}
                 </button>
               ))}
+            </div>
+          )}
+          {searchQuery.length >= 2 && searchResults.length === 0 && (
+            <div className="absolute top-full left-0 right-0 bg-card border border-border rounded-lg mt-1 p-3 z-50 shadow-lg">
+              <p className="text-sm text-muted-foreground">No destinations found. Try a different search.</p>
             </div>
           )}
         </div>
@@ -194,15 +251,15 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
       )}
 
       {/* Journey plan */}
-      {journeyPlan && !isOnBoard && (
+      {journey && !isOnBoard && (
         <div className="bg-primary/10 px-4 py-3 border-b border-border">
           <p className="text-xs text-muted-foreground mb-1">
-            {journeyPlan.type === 'direct' ? 'Direct Route' : 'Transfer Required'}
+            {journey.segments.length === 1 ? 'Direct Route' : `${journey.segments.length} Transfer(s)`}
           </p>
-          {journeyPlan.instructions.map((instruction, idx) => (
+          {journey.segments.map((seg, idx) => (
             <p key={idx} className="text-sm flex items-center gap-2">
               <ArrowRight className="w-3 h-3 text-primary" />
-              {instruction}
+              Route {seg.route.shortName}: {seg.fromStop.name} → {seg.toStop.name}
             </p>
           ))}
         </div>
@@ -213,42 +270,63 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
         <MatatuMap 
           mode="passenger" 
           journeyStops={journeyStops}
+          journeySegments={journey?.segments.map(seg => ({ stops: seg.stops }))}
           userPosition={userPosition}
           destinationStop={destination}
         />
       </div>
 
-      {/* Journey progress */}
+      {/* Journey progress with transfer indicators */}
       {isOnBoard && journeyStops.length > 0 && (
         <div className="flex-1 overflow-auto px-4 py-4">
           <h3 className="font-display text-lg mb-3 flex items-center gap-2">
             <MapPin className="w-4 h-4 text-primary" />
             Journey Progress
+            {journey && journey.segments.length > 1 && (
+              <span className="text-xs bg-orange-500/20 text-orange-400 px-2 py-1 rounded-full">
+                {journey.segments.length} Transfer(s)
+              </span>
+            )}
           </h3>
           <div className="space-y-2">
-            {journeyStops.map((stop, index) => (
-              <div
-                key={stop.id}
-                className={`p-3 rounded-lg border transition-all ${
-                  index === currentStopIndex 
-                    ? 'bg-primary/20 border-primary' 
-                    : index < currentStopIndex
-                    ? 'bg-muted/50 border-transparent opacity-50'
-                    : 'bg-card border-border'
-                } ${stop.id === destination?.id ? 'ring-2 ring-matatu-yellow' : ''}`}
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`w-3 h-3 rounded-full ${
-                    index === currentStopIndex ? 'bg-primary animate-pulse' : 
-                    index < currentStopIndex ? 'bg-muted-foreground' : 'bg-matatu-yellow'
-                  }`} />
-                  <span className={index === currentStopIndex ? 'text-primary font-medium' : ''}>
-                    {stop.name}
-                  </span>
-                  {stop.id === destination?.id && <Bell className="w-4 h-4 text-matatu-yellow ml-auto" />}
+            {journeyStops.map((stop, index) => {
+              const isTransferPoint = journey?.segments.some(seg => seg.toStop.id === stop.id && seg !== journey.segments[journey.segments.length - 1]);
+              
+              return (
+                <div
+                  key={stop.id}
+                  className={`p-3 rounded-lg border transition-all ${
+                    index === currentStopIndex 
+                      ? 'bg-primary/20 border-primary' 
+                      : index < currentStopIndex
+                      ? 'bg-muted/50 border-transparent opacity-50'
+                      : 'bg-card border-border'
+                  } ${
+                    stop.id === destination?.id ? 'ring-2 ring-matatu-yellow' : ''
+                  } ${
+                    isTransferPoint ? 'ring-2 ring-orange-400' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${
+                      index === currentStopIndex ? 'bg-primary animate-pulse' : 
+                      index < currentStopIndex ? 'bg-muted-foreground' : 'bg-matatu-yellow'
+                    }`} />
+                    <div className="flex-1">
+                      <span className={index === currentStopIndex ? 'text-primary font-medium' : ''}>
+                        {stop.name}
+                      </span>
+                      {isTransferPoint && (
+                        <div className="text-xs text-orange-400 mt-1">
+                          🔄 Transfer Point - Change Matatu
+                        </div>
+                      )}
+                    </div>
+                    {stop.id === destination?.id && <Bell className="w-4 h-4 text-matatu-yellow" />}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -261,10 +339,10 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
             size="lg"
             className="w-full bg-primary"
             onClick={handleBoard}
-            disabled={!journeyPlan}
+            disabled={!destination}
           >
             <Clock className="w-5 h-5 mr-2" />
-            {journeyPlan ? `Start Journey to ${destination?.name}` : 'Select a Destination'}
+            {destination ? `Start Journey to ${destination.name}` : 'Select a Destination'}
           </Button>
         ) : (
           <Button
