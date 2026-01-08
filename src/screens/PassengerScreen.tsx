@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import MatatuMap from '@/components/Map/MatatuMap';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { searchStops, loadStops, findOptimalRoute, Journey, Stop, JourneySegment } from '@/services/StopsRoutesLoaderFixed';
+import { searchStops, loadStops, findOptimalRoute, clearRouteCaches, Journey, Stop, JourneySegment } from '@/services/StopsRoutesLoaderFixed';
 import { 
   ArrowLeft, 
   MapPin,
@@ -35,6 +35,9 @@ const PassengerScreen: React.FC<PassengerScreenProps> = ({ onBack }) => {
 
   useEffect(() => {
     const initializePassenger = async () => {
+      // Clear caches to ensure fresh data with new parsing logic
+      clearRouteCaches();
+      
       const stops = await loadStops();
       if (stops.length > 0) {
         setCurrentLocation(stops[0]);
