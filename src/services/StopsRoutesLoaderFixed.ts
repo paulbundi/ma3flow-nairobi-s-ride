@@ -50,6 +50,13 @@ const CBD_TRANSFER_ZONES = [
 let stopsCache: Stop[] | null = null;
 let routesCache: Route[] | null = null;
 
+// Clear caches to force reload with new parsing logic
+export function clearRouteCaches(): void {
+  stopsCache = null;
+  routesCache = null;
+  console.log('Route caches cleared - will reload on next request');
+}
+
 function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -84,25 +91,80 @@ export async function loadStops(): Promise<Stop[]> {
 function findStopByName(routeName: string, stops: Stop[]): Stop | undefined {
   const routeNameLower = routeName.toLowerCase().trim();
   
+  // Skip very short names that cause phantom matches
+  if (routeNameLower.length <= 2) return undefined;
+  
+  // 1. Exact match
   let stop = stops.find(s => s.name.toLowerCase() === routeNameLower);
   if (stop) return stop;
   
+  // 2. Starts-with match
   stop = stops.find(s => s.name.toLowerCase().startsWith(routeNameLower));
   if (stop) return stop;
   
-  stop = stops.find(s => routeNameLower.startsWith(s.name.toLowerCase()));
-  if (stop) return stop;
-  
+  // 3. Contains match (for "T Mall" matching "Tmall")
   stop = stops.find(s => s.name.toLowerCase().includes(routeNameLower));
   if (stop) return stop;
   
-  const routeWords = routeNameLower.split(/[\s-]+/).filter(w => w.length > 2);
-  for (const word of routeWords) {
-    stop = stops.find(s => s.name.toLowerCase().includes(word));
-    if (stop) return stop;
-  }
+  // 4. Normalized match (remove spaces/hyphens)
+  const normalizedRoute = routeNameLower.replace(/[\s-]/g, '');
+  stop = stops.find(s => s.name.toLowerCase().replace(/[\s-]/g, '') === normalizedRoute);
+  if (stop) return stop;
   
+  // DO NOT use word-based matching - it causes phantom stops like "K" and "M"
   return undefined;
+}
+
+// Smart split that handles compound names like "Westlands Bypass", "Methodist Guesthouse", etc.
+function smartSplitRouteName(longName: string): string[] {
+  const compoundNames = [
+    'westlands bypass', 'methodist guesthouse', 'othaya road', 'aga khan',
+    'red cross', 'kiambu road', 'kiambu institute', 'kiambu hospital',
+    'drive in', 'baba dogo', 'lucky summer', 'high school', 'juja road',
+    'jogoo road', 'mombasa road', 'ngong road', 'langata road',
+    'valley road', 'outering road', 'thika road', 'kangundo road',
+    'ongata rongai', 'muthaiga roundabout', 'city stadium', 'nyayo stadium',
+    'wilson airport', 'kenyatta national hospital', 'mama lucy hospital',
+    'graffins college', 'strathmore school', 'pangani flyover', 'pangani terminus',
+    'pangani girls', 'guru nanak', 'fire station', 'landhies road', 'nation building',
+    'museum hill', 'spring valley', 'peponi road', 'abc place', 'yaya centre',
+    'karen hospital', 'dagoretti market', 'dagoretti corner', 'race course',
+    'training institute', 'college of insurance', 'south b', 'south c',
+    'nairobi west', 'industrial area', 'imara daima', 'taj mall', 'gate a',
+    'gate b', 'umoja 2', 'kariobangi south', 'kariobangi north', 'ronald ngala',
+    'accra road', 't mall', 'tmall', 'bus station'
+  ];
+  
+  let processed = longName.toLowerCase();
+  const placeholders: Map<string, string> = new Map();
+  
+  // Sort by length descending to match longer names first
+  const sortedCompounds = [...compoundNames].sort((a, b) => b.length - a.length);
+  
+  sortedCompounds.forEach((compound, idx) => {
+    const placeholder = `COMPOUND${idx}PLACEHOLDER`;
+    if (processed.includes(compound)) {
+      placeholders.set(placeholder, compound);
+      processed = processed.split(compound).join(placeholder);
+    }
+  });
+  
+  // Split on hyphens
+  const parts = processed.split('-').map(s => s.trim()).filter(s => s.length > 0);
+  
+  // Restore compound names
+  const restored = parts.map(part => {
+    let result = part;
+    for (const [placeholder, original] of placeholders) {
+      if (result.includes(placeholder.toLowerCase())) {
+        result = result.replace(placeholder.toLowerCase(), original);
+      }
+    }
+    return result.trim();
+  });
+  
+  // Filter out short strings that could be phantom matches
+  return restored.filter(s => s.length > 2);
 }
 
 export async function loadRoutes(): Promise<Route[]> {
@@ -119,11 +181,15 @@ export async function loadRoutes(): Promise<Route[]> {
     const shortName = parts[2].trim();
     const longName = parts[3].trim();
     
-    const routeStopNames = longName.split('-').map(s => s.trim());
+    // Use smart split to handle compound names like "Westlands Bypass"
+    const routeStopNames = smartSplitRouteName(longName);
     const routeStops: Stop[] = [];
     const usedStopIds = new Set<string>();
     
     for (const name of routeStopNames) {
+      // Skip short names that could cause phantom matches
+      if (name.length <= 2) continue;
+      
       const stop = findStopByName(name, stops);
       if (stop && !usedStopIds.has(stop.id)) {
         routeStops.push(stop);
@@ -139,6 +205,7 @@ export async function loadRoutes(): Promise<Route[]> {
     };
   }).filter(r => r.stops.length > 0);
 
+  console.log('Routes loaded:', routesCache.length);
   return routesCache;
 }
 
@@ -149,17 +216,29 @@ export async function searchStops(query: string): Promise<Stop[]> {
 }
 
 function stopMatches(routeStop: Stop, userStop: Stop): boolean {
+  // 1. Exact ID match
   if (routeStop.id === userStop.id) return true;
   
   const routeNameLower = routeStop.name.toLowerCase().trim();
   const userNameLower = userStop.name.toLowerCase().trim();
   
+  // 2. Exact name match
   if (routeNameLower === userNameLower) return true;
   
-  const routeWords = routeNameLower.split(/[\s-]+/).filter(w => w.length > 2);
-  const userWords = userNameLower.split(/[\s-]+/).filter(w => w.length > 2);
+  // 3. One contains the other (for "Bus Station" matching "Bus Station...")
+  if (routeNameLower.includes(userNameLower) || userNameLower.includes(routeNameLower)) return true;
   
-  return routeWords.some(rw => userWords.includes(rw));
+  // 4. Normalized match (remove spaces/hyphens)
+  const routeNorm = routeNameLower.replace(/[\s-]/g, '');
+  const userNorm = userNameLower.replace(/[\s-]/g, '');
+  if (routeNorm === userNorm) return true;
+  
+  // 5. Geographic proximity (< 300m = same stop)
+  const distance = haversineDistance(routeStop.lat, routeStop.lon, userStop.lat, userStop.lon);
+  if (distance < 300) return true;
+  
+  // DO NOT use word-based matching - it causes false positives
+  return false;
 }
 
 function areStopsInSameCBDZone(stop1: Stop, stop2: Stop): { inSameZone: boolean; zoneName?: string; walkDistance?: number } {
