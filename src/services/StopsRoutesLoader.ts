@@ -26,6 +26,24 @@ export interface Journey {
   totalStops: Stop[];
 }
 
+// Stop name aliases for known variations
+const STOP_NAME_ALIASES: Record<string, string[]> = {
+  'bus station': ['bus station', 'bss', 'bus stn'],
+  'tmall': ['tmall', 't mall', 't-mall'],
+  't mall': ['tmall', 't mall', 't-mall'],
+  'nyayo stadium': ['nyayo stadium', 'nyayo', 'nyayo std'],
+  'highrise': ['highrise', 'high rise', 'high-rise'],
+  'otc': ['otc', 'o.t.c'],
+  'odeon': ['odeon'],
+  'kencom': ['kencom', 'ambassadeur', 'kencom/ambassadeur'],
+  'westlands': ['westlands', 'westland'],
+  'kangemi': ['kangemi'],
+  'uthiru': ['uthiru'],
+  'kayole': ['kayole'],
+  'donholm': ['donholm'],
+  'eastleigh': ['eastleigh'],
+};
+
 // CBD Transfer Zones - stops in the same zone can be walked between
 const CBD_TRANSFER_ZONES = [
   {
@@ -83,33 +101,82 @@ export async function loadStops(): Promise<Stop[]> {
   return stopsCache;
 }
 
+// Get canonical name for aliases
+function getCanonicalName(name: string): string {
+  const normalized = name.toLowerCase().trim();
+  for (const [canonical, aliases] of Object.entries(STOP_NAME_ALIASES)) {
+    if (aliases.includes(normalized) || aliases.some(a => normalized.includes(a))) {
+      return canonical;
+    }
+  }
+  return normalized;
+}
+
+// Fixed findStopByName - no more phantom stops from word matching
 function findStopByName(routeName: string, stops: Stop[]): Stop | undefined {
-  const routeNameLower = routeName.toLowerCase().trim();
+  const normalized = routeName.toLowerCase().trim();
   
-  // Try exact match first
-  let stop = stops.find(s => s.name.toLowerCase() === routeNameLower);
+  // Skip very short names that cause phantom matches
+  if (normalized.length <= 1) return undefined;
+  
+  // 1. Exact match
+  let stop = stops.find(s => s.name.toLowerCase() === normalized);
   if (stop) return stop;
   
-  // Try starts with
-  stop = stops.find(s => s.name.toLowerCase().startsWith(routeNameLower));
-  if (stop) return stop;
-  
-  // Try reverse starts with
-  stop = stops.find(s => routeNameLower.startsWith(s.name.toLowerCase()));
-  if (stop) return stop;
-  
-  // Try contains
-  stop = stops.find(s => s.name.toLowerCase().includes(routeNameLower));
-  if (stop) return stop;
-  
-  // Try word matching for compound names
-  const routeWords = routeNameLower.split(/[\s-]+/).filter(w => w.length > 2);
-  for (const word of routeWords) {
-    stop = stops.find(s => s.name.toLowerCase().includes(word));
+  // 2. Check aliases - map to canonical name
+  const canonical = getCanonicalName(normalized);
+  if (canonical !== normalized) {
+    stop = stops.find(s => s.name.toLowerCase().includes(canonical));
     if (stop) return stop;
   }
   
+  // 3. Normalized match (remove spaces/hyphens)
+  const normalizedClean = normalized.replace(/[\s-]/g, '');
+  if (normalizedClean.length > 2) {
+    stop = stops.find(s => s.name.toLowerCase().replace(/[\s-]/g, '') === normalizedClean);
+    if (stop) return stop;
+  }
+  
+  // 4. Starts-with match (only if name is substantial)
+  if (normalized.length >= 3) {
+    stop = stops.find(s => s.name.toLowerCase().startsWith(normalized));
+    if (stop) return stop;
+  }
+  
+  // 5. Contains match (only if name is substantial)
+  if (normalized.length >= 4) {
+    stop = stops.find(s => s.name.toLowerCase().includes(normalized));
+    if (stop) return stop;
+  }
+  
+  // NO word-based matching - this creates phantom stops like "K" and "M"!
   return undefined;
+}
+
+// Validate route stops have reasonable geographic distances
+function validateRouteStops(stops: Stop[]): Stop[] {
+  if (stops.length < 2) return stops;
+  
+  const validatedStops: Stop[] = [stops[0]];
+  
+  for (let i = 1; i < stops.length; i++) {
+    const prevStop = validatedStops[validatedStops.length - 1];
+    const currentStop = stops[i];
+    
+    // Check if distance is reasonable (< 20km between consecutive stops)
+    const distance = haversineDistance(
+      prevStop.lat, prevStop.lon,
+      currentStop.lat, currentStop.lon
+    );
+    
+    if (distance < 20000) { // 20km max between stops
+      validatedStops.push(currentStop);
+    } else {
+      console.warn(`Rejected stop ${currentStop.name} - too far from ${prevStop.name} (${(distance/1000).toFixed(1)}km)`);
+    }
+  }
+  
+  return validatedStops;
 }
 
 export async function loadRoutes(): Promise<Route[]> {
@@ -138,11 +205,14 @@ export async function loadRoutes(): Promise<Route[]> {
       }
     }
     
+    // Validate stops have reasonable distances between them
+    const validatedStops = validateRouteStops(routeStops);
+    
     return {
       id,
       shortName,
       longName,
-      stops: routeStops
+      stops: validatedStops
     };
   }).filter(r => r.stops.length > 0);
 
@@ -157,15 +227,27 @@ export async function searchStops(query: string): Promise<Stop[]> {
 
 // Check if a route stop matches a user-selected stop (with fuzzy matching)
 function stopMatches(routeStop: Stop, userStop: Stop): boolean {
-  // Exact ID match
+  // 1. Exact ID match
   if (routeStop.id === userStop.id) return true;
   
-  // Name-based matching
+  // 2. Name-based matching
   const routeNameLower = routeStop.name.toLowerCase();
   const userNameLower = userStop.name.toLowerCase();
   
   if (routeNameLower === userNameLower) return true;
   if (routeNameLower.includes(userNameLower) || userNameLower.includes(routeNameLower)) return true;
+  
+  // 3. Canonical name matching (for aliases)
+  const routeCanonical = getCanonicalName(routeNameLower);
+  const userCanonical = getCanonicalName(userNameLower);
+  if (routeCanonical === userCanonical) return true;
+  
+  // 4. Geographic proximity (< 300m = same stop)
+  const distance = haversineDistance(
+    routeStop.lat, routeStop.lon,
+    userStop.lat, userStop.lon
+  );
+  if (distance < 300) return true;
   
   return false;
 }
@@ -219,6 +301,23 @@ function findCBDHubsOnRoute(route: Route): Stop[] {
 
 export async function findOptimalRoute(fromStop: Stop, toStop: Stop): Promise<Journey | null> {
   const routes = await loadRoutes();
+  
+  // Check for walking-only journey (< 800m between stops)
+  const directWalkDistance = haversineDistance(fromStop.lat, fromStop.lon, toStop.lat, toStop.lon);
+  if (directWalkDistance < 800) {
+    console.log(`Walking-only journey: ${fromStop.name} to ${toStop.name} (${Math.round(directWalkDistance)}m)`);
+    return {
+      segments: [{
+        route: null,
+        fromStop,
+        toStop,
+        stops: [fromStop, toStop],
+        isWalking: true,
+        walkingDistance: directWalkDistance
+      }],
+      totalStops: [fromStop, toStop]
+    };
+  }
   
   // Find routes that serve fromStop
   const fromRoutes = routes.filter(r => 
