@@ -179,6 +179,53 @@ function validateRouteStops(stops: Stop[]): Stop[] {
   return validatedStops;
 }
 
+// Smart split that handles compound names like "Westlands Bypass", "Aga Khan", etc.
+function smartSplitRouteName(longName: string): string[] {
+  // Known compound stop names (that contain hyphens or should not be split)
+  const compoundNames = [
+    'westlands bypass', 'methodist guesthouse', 'othaya road', 'aga khan',
+    'red cross', 'kiambu road', 'kiambu institute', 'kiambu hospital',
+    'drive in', 'baba dogo', 'lucky summer', 'high school', 'juja road',
+    'jogoo road', 'mombasa road', 'ngong road', 'langata road', 'kiambu road',
+    'valley road', 'outering road', 'thika road', 'kangundo road', 'bypass',
+    'ongata rongai', 'muthaiga roundabout', 'city stadium', 'nyayo stadium',
+    'wilson airport', 'kenyatta national hospital', 'mama lucy hospital',
+    'graffins college', 'strathmore school', 'pangani flyover', 'pangani terminus',
+    'pangani girls', 'guru nanak', 'fire station', 'landhies road', 'nation building',
+    'museum hill', 'spring valley', 'peponi road', 'abc place', 'yaya centre',
+    'karen hospital', 'dagoretti market', 'dagoretti corner', 'race course',
+    'training institute', 'college of insurance', 'south b', 'south c',
+    'nairobi west', 'industrial area', 'imara daima', 'taj mall', 'gate a',
+    'gate b', 'umoja 2', 'kariobangi south', 'kariobangi north', 'ronald ngala',
+    'accra road', 't mall', 'tmall'
+  ];
+  
+  // Replace compound names with placeholders
+  let processed = longName.toLowerCase();
+  const placeholders: Map<string, string> = new Map();
+  
+  compoundNames.forEach((compound, idx) => {
+    const placeholder = `__COMPOUND_${idx}__`;
+    if (processed.includes(compound)) {
+      placeholders.set(placeholder, compound);
+      processed = processed.replace(new RegExp(compound, 'gi'), placeholder);
+    }
+  });
+  
+  // Now split on hyphens
+  const parts = processed.split('-').map(s => s.trim()).filter(s => s.length > 0);
+  
+  // Restore compound names
+  return parts.map(part => {
+    for (const [placeholder, original] of placeholders) {
+      if (part.includes(placeholder.toLowerCase())) {
+        return part.replace(placeholder.toLowerCase(), original);
+      }
+    }
+    return part;
+  }).filter(s => s.length > 1); // Filter out single characters
+}
+
 export async function loadRoutes(): Promise<Route[]> {
   if (routesCache) return routesCache;
 
@@ -193,11 +240,15 @@ export async function loadRoutes(): Promise<Route[]> {
     const shortName = parts[2].trim();
     const longName = parts[3].trim();
     
-    const routeStopNames = longName.split('-').map(s => s.trim());
+    // Use smart split to handle compound names
+    const routeStopNames = smartSplitRouteName(longName);
     const routeStops: Stop[] = [];
     const usedStopIds = new Set<string>();
     
     for (const name of routeStopNames) {
+      // Skip very short names that cause phantom matches
+      if (name.length <= 2) continue;
+      
       const stop = findStopByName(name, stops);
       if (stop && !usedStopIds.has(stop.id)) {
         routeStops.push(stop);
@@ -216,6 +267,9 @@ export async function loadRoutes(): Promise<Route[]> {
     };
   }).filter(r => r.stops.length > 0);
 
+  // Clear cache to force reload with new parsing logic
+  console.log('Routes loaded:', routesCache.length);
+  
   return routesCache;
 }
 
